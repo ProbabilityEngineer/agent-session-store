@@ -1,6 +1,6 @@
 ---
 id: ass-logical-thread-tables
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T03:40:00Z

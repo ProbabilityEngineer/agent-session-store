@@ -12,7 +12,8 @@
     "temporal-lineage": "tsx scripts/build-temporal-lineage.ts",
     "build-store": "tsx scripts/build-curated-store.ts",
     "backup-readiness": "tsx scripts/backup-readiness-report.ts",
-    "inventory-buckets": "tsx scripts/inventory-session-buckets.ts"
+    "inventory-buckets": "tsx scripts/inventory-session-buckets.ts",
+    "logical-threads": "tsx scripts/logical-thread-report.ts"
   },
   "keywords": [
     "agent",

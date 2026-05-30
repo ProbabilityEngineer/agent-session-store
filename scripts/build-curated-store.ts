@@ -64,6 +64,9 @@ type Store = {
 	artifacts: Artifact[];
 	observationMarks: ObservationMark[];
 	batchOperations: BatchOperation[];
+	logicalThreads: LogicalThread[];
+	threadMembers: ThreadMember[];
+	threadEdges: ThreadEdge[];
 };
 
 type Source = { id: string; provider: string; kind: string; uri: string; label?: string; firstObservedAt?: string; lastObservedAt?: string; metadata?: Json };
@@ -80,6 +83,9 @@ type Repository = { id: string; sourceId: string; path: string; name: string; re
 type Artifact = { id: string; kind: string; path: string; generatedAt: string; generator: string; inputHash?: string; metadata?: Json };
 type ObservationMark = { id: string; observationId: string; markType: string; reason?: string; replacementObservationId?: string; source: string; timestamp: string; confidence: string; manualReviewRequired: boolean; metadata?: Json };
 type BatchOperation = { id: string; operationType: string; sourcePath: string; destinationPath: string; timestamp: string; source: string; status: string; metadata?: Json };
+type LogicalThread = { id: string; label?: string; confidence: string; source: string; metadata?: Json };
+type ThreadMember = { id: string; threadId: string; sessionId: string; observationId?: string; role: string; ordinal: number; metadata?: Json };
+type ThreadEdge = { id: string; threadId: string; sourceSessionId: string; targetSessionId: string; relation: string; edgeId?: string; confidence: string; source: string; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -172,6 +178,57 @@ async function findGitRoots(root: string): Promise<string[]> {
 function pushUnique<T extends { id: string }>(array: T[], seen: Set<string>, item: T) { if (!seen.has(item.id)) { seen.add(item.id); array.push(item); } }
 function json(value: unknown) { return JSON.stringify(value ?? {}); }
 
+class DisjointSet {
+	parents = new Map<string, string>();
+	find(value: string): string {
+		const parent = this.parents.get(value) ?? value;
+		if (parent === value) { this.parents.set(value, value); return value; }
+		const root = this.find(parent);
+		this.parents.set(value, root);
+		return root;
+	}
+	union(a: string, b: string) { this.parents.set(this.find(a), this.find(b)); }
+}
+
+function deriveLogicalThreads(store: Store) {
+	const ds = new DisjointSet();
+	for (const session of store.sessions) ds.find(session.id);
+	for (const edge of store.edges) ds.union(edge.sourceSessionId, edge.targetSessionId);
+	const byProviderSession = new Map<string, string[]>();
+	for (const session of store.sessions) {
+		if (!session.providerSessionId) continue;
+		const list = byProviderSession.get(session.providerSessionId) ?? [];
+		list.push(session.id);
+		byProviderSession.set(session.providerSessionId, list);
+	}
+	for (const ids of byProviderSession.values()) for (const id of ids.slice(1)) ds.union(ids[0]!, id);
+	const groups = new Map<string, Session[]>();
+	for (const session of store.sessions) {
+		const group = groups.get(ds.find(session.id)) ?? [];
+		group.push(session);
+		groups.set(ds.find(session.id), group);
+	}
+	for (const group of groups.values()) {
+		group.sort((a, b) => (a.startTimestamp ?? a.firstSeenAt ?? "").localeCompare(b.startTimestamp ?? b.firstSeenAt ?? "") || a.id.localeCompare(b.id));
+		const threadId = id("thread", ...group.map((session) => session.id).sort());
+		const label = String(group.find((session) => typeof session.metadata?.displayName === "string")?.metadata?.displayName ?? group.find((session) => typeof session.metadata?.cwd === "string")?.metadata?.cwd ?? group[0]?.providerSessionId ?? threadId);
+		store.logicalThreads.push({ id: threadId, label, confidence: "medium", source: "derived-relocation-provider-session", metadata: { sessionCount: group.length, providerSessionIds: [...new Set(group.map((session) => session.providerSessionId).filter(Boolean))] } });
+		for (const [ordinal, session] of group.entries()) {
+			const observation = store.sessionObservations.find((obs) => obs.sessionId === session.id);
+			store.threadMembers.push({ id: id("thread_member", threadId, session.id), threadId, sessionId: session.id, observationId: observation?.id, role: ordinal === 0 ? "root" : "member", ordinal, metadata: { cwd: session.metadata?.cwd } });
+		}
+	}
+	const threadBySession = new Map<string, string>();
+	for (const member of store.threadMembers) threadBySession.set(member.sessionId, member.threadId);
+	for (const edge of store.edges) {
+		const threadId = threadBySession.get(edge.sourceSessionId);
+		if (!threadId || threadBySession.get(edge.targetSessionId) !== threadId) continue;
+		const classification = store.classifications.find((item) => item.targetType === "edge" && item.targetId === edge.id)?.classification;
+		const relation = classification?.includes("context") ? "context_jump" : edge.edgeType === "branch" ? "fork" : "continuation";
+		store.threadEdges.push({ id: id("thread_edge", threadId, edge.id), threadId, sourceSessionId: edge.sourceSessionId, targetSessionId: edge.targetSessionId, relation, edgeId: edge.id, confidence: edge.confidence, source: edge.provenance, metadata: { classification, edgeType: edge.edgeType } });
+	}
+}
+
 function initSqlite(db: DatabaseSync) {
 	db.exec(`
 CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, uri TEXT NOT NULL, label TEXT, first_observed_at TEXT, last_observed_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
@@ -189,6 +246,9 @@ CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, source_id TEXT, pa
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL, generated_at TEXT NOT NULL, generator TEXT NOT NULL, input_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS observation_marks (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, mark_type TEXT NOT NULL, reason TEXT, replacement_observation_id TEXT, source TEXT NOT NULL, timestamp TEXT NOT NULL, confidence TEXT NOT NULL, manual_review_required INTEGER NOT NULL DEFAULT 1, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, source_path TEXT NOT NULL, destination_path TEXT NOT NULL, timestamp TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS logical_threads (id TEXT PRIMARY KEY, label TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS thread_members (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, session_id TEXT NOT NULL, observation_id TEXT, role TEXT NOT NULL, ordinal INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS thread_edges (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, source_session_id TEXT NOT NULL, target_session_id TEXT NOT NULL, relation TEXT NOT NULL, edge_id TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -198,7 +258,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 		db.exec("PRAGMA journal_mode = WAL");
 		initSqlite(db);
 		db.exec("BEGIN");
-		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations"]) db.exec(`DELETE FROM ${table}`);
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges"]) db.exec(`DELETE FROM ${table}`);
 		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
 		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -227,6 +287,12 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.observationMarks) markStmt.run(r.id, r.observationId, r.markType, r.reason ?? null, r.replacementObservationId ?? null, r.source, r.timestamp, r.confidence, r.manualReviewRequired ? 1 : 0, json(r.metadata));
 		const batchStmt = db.prepare("INSERT INTO batch_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.batchOperations) batchStmt.run(r.id, r.operationType, r.sourcePath, r.destinationPath, r.timestamp, r.source, r.status, json(r.metadata));
+		const threadStmt = db.prepare("INSERT INTO logical_threads VALUES (?, ?, ?, ?, ?)");
+		for (const r of store.logicalThreads) threadStmt.run(r.id, r.label ?? null, r.confidence, r.source, json(r.metadata));
+		const memberStmt = db.prepare("INSERT INTO thread_members VALUES (?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.threadMembers) memberStmt.run(r.id, r.threadId, r.sessionId, r.observationId ?? null, r.role, r.ordinal, json(r.metadata));
+		const threadEdgeStmt = db.prepare("INSERT INTO thread_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.threadEdges) threadEdgeStmt.run(r.id, r.threadId, r.sourceSessionId, r.targetSessionId, r.relation, r.edgeId ?? null, r.confidence, r.source, json(r.metadata));
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
@@ -244,7 +310,7 @@ async function main() {
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
 	const inventory = await readJson<Json>(inventoryPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
@@ -325,8 +391,9 @@ async function main() {
 		if (info) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "git", repoPath), kind: "git_activity", sourceId: oldRepoSource, timestamp: info.lastAt, confidence: "high", summary: `${relative(oldExtensionsDir, repoPath)} activity ${info.firstAt} to ${info.lastAt}`, data: { path: repoPath, firstCommit: info.firstHash, firstSubject: info.firstSubject, lastCommit: info.lastHash, lastSubject: info.lastSubject, remote: info.remote } });
 	}
 
+	deriveLogicalThreads(store);
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
-	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
+	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";
