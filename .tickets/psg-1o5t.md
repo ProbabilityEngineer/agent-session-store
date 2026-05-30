@@ -1,6 +1,6 @@
 ---
 id: psg-1o5t
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:05:07Z

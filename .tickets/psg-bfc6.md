@@ -1,6 +1,6 @@
 ---
 id: psg-bfc6
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:05:19Z

@@ -1,6 +1,6 @@
 ---
 id: psg-eh6b
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:04:22Z

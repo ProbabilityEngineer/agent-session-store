@@ -26,6 +26,7 @@ Do not mutate raw session JSONLs or `~/.pi/agent/relocations.jsonl`. The store i
 ## Current scripts
 
 ```bash
+npm run build-store
 npm run reconstruct
 npm run validate-timeline
 npm run index-segments
@@ -34,6 +35,13 @@ npm run temporal-lineage
 ```
 
 These scripts currently read Pi data under `~/.pi/agent/` and write reports under `~/.pi/agent/session-graph/`.
+
+`npm run build-store` writes the current canonical JSON export to:
+
+```text
+~/.pi/agent/session-store/session-store.export.json
+~/.pi/agent/session-graph/curated-store.json
+```
 
 ## Relationship to other repos
 

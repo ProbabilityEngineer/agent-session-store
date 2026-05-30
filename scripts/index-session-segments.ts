@@ -7,9 +7,10 @@ const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(process.env.HOME ?? "."
 const sessionsDir = join(agentDir, "sessions");
 const outDir = join(agentDir, "session-graph");
 const manifestPath = join(agentDir, "relocations.jsonl");
+const prefixLineagePath = join(outDir, "prefix-lineage.json");
 
 type SegmentClass = "unique" | "duplicateHistorical";
-type EdgeClass = "authoritativeManifest" | "uniqueSegmentEvidence" | "duplicatedSegmentEvidence" | "noisyCopiedEvidence";
+type EdgeClass = "authoritativeManifest" | "prefixBackedForensicEvidence" | "forensicSegmentEvidence" | "duplicatedForensicEvidence" | "suppressedCopiedEvidence";
 
 type Segment = {
   id: string;
@@ -178,6 +179,20 @@ async function readManifest(): Promise<ManifestRecord[]> {
   });
 }
 
+type PrefixLineage = { bestCandidates?: { best?: { source?: string; destination?: string } }[]; forkEntries?: [string, { source?: string; destination?: string }[]][] };
+
+async function readPrefixPairs(): Promise<Set<string>> {
+  const raw = await readFile(prefixLineagePath, "utf8").catch(() => "");
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw) as PrefixLineage;
+    const pairs = new Set<string>();
+    for (const item of parsed.bestCandidates ?? []) if (item.best?.source && item.best.destination) pairs.add(edgeKey(item.best.source, item.best.destination));
+    for (const [, entries] of parsed.forkEntries ?? []) for (const entry of entries) if (entry.source && entry.destination) pairs.add(edgeKey(entry.source, entry.destination));
+    return pairs;
+  } catch { return new Set(); }
+}
+
 function short(path: string): string {
   const home = process.env.HOME;
   return home && path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
@@ -216,6 +231,7 @@ async function main() {
   const sessionFiles = await walk(sessionsDir);
   const manifest = await readManifest();
   const authoritativePairs = new Set(manifest.filter((r) => !r.inferred).map((r) => edgeKey(r.sourceSession, r.destinationSession)));
+  const prefixPairs = await readPrefixPairs();
   const allSegments: Segment[] = [];
   const allEdges: SegmentEdge[] = [];
   for (const session of sessionFiles) {
@@ -268,11 +284,13 @@ async function main() {
     edge.isSelfEdge = edge.evidenceSession === edge.destination;
     edge.destinationBirthDeltaSeconds = deltaSeconds(segment?.endTs, destinationBirthtimes.get(edge.destination));
     const explicit = authoritativePairs.has(edgeKey(edge.evidenceSession, edge.destination));
+    const prefixBacked = prefixPairs.has(edgeKey(edge.evidenceSession, edge.destination));
     if (explicit) edge.class = "authoritativeManifest";
-    else if (!edge.destinationExists || edge.isSelfEdge || edge.destinationsOnLine > 2 || edge.destinationsInSegment > 3) edge.class = "noisyCopiedEvidence";
-    else if (segment?.class === "unique") edge.class = "uniqueSegmentEvidence";
-    else if ((segment?.repeatedInFiles ?? 0) > 3) edge.class = "noisyCopiedEvidence";
-    else edge.class = "duplicatedSegmentEvidence";
+    else if (!edge.destinationExists || edge.isSelfEdge || isTruncatedPath(edge.destination) || edge.destinationsOnLine > 2 || edge.destinationsInSegment > 3) edge.class = "suppressedCopiedEvidence";
+    else if (prefixBacked) edge.class = "prefixBackedForensicEvidence";
+    else if (segment?.class === "unique") edge.class = "forensicSegmentEvidence";
+    else if ((segment?.repeatedInFiles ?? 0) > 3) edge.class = "suppressedCopiedEvidence";
+    else edge.class = "duplicatedForensicEvidence";
 
     let score = 0;
     const reasons: string[] = [];
@@ -285,15 +303,15 @@ async function main() {
     rankedEdges.push({ edge, score, reasons, destinationExists: Boolean(edge.destinationExists), isSelfEdge: Boolean(edge.isSelfEdge), destinationBirthDeltaSeconds: edge.destinationBirthDeltaSeconds });
   }
 
-  const usableEdges = allEdges.filter((edge) => edge.class === "authoritativeManifest" || edge.class === "uniqueSegmentEvidence");
-  const suppressedEdges = allEdges.filter((edge) => edge.class === "duplicatedSegmentEvidence" || edge.class === "noisyCopiedEvidence");
+  const usableEdges = allEdges.filter((edge) => edge.class === "authoritativeManifest" || edge.class === "prefixBackedForensicEvidence");
+  const suppressedEdges = allEdges.filter((edge) => edge.class === "duplicatedForensicEvidence" || edge.class === "suppressedCopiedEvidence");
   const bestByDestination = [...rankedEdges.reduce<Map<string, EdgeRank>>((acc, ranked) => {
     const current = acc.get(ranked.edge.destination);
     if (!current || ranked.score > current.score) acc.set(ranked.edge.destination, ranked);
     return acc;
   }, new Map()).values()].sort((a, b) => b.score - a.score);
   const manifestBackedSegmentEdges = rankedEdges.filter((ranked) => ranked.edge.class === "authoritativeManifest").sort((a, b) => b.score - a.score);
-  const segmentOnlyCandidates = bestByDestination.filter((ranked) => ranked.edge.class === "uniqueSegmentEvidence");
+  const segmentOnlyCandidates = bestByDestination.filter((ranked) => ranked.edge.class === "forensicSegmentEvidence" && ranked.edge.destinationExists && !ranked.edge.isSelfEdge);
   const classCounts = allEdges.reduce<Record<string, number>>((acc, edge) => {
     acc[edge.class ?? "unclassified"] = (acc[edge.class ?? "unclassified"] ?? 0) + 1;
     return acc;
@@ -333,7 +351,7 @@ async function main() {
     ...manifestBackedSegmentEdges.slice(0, 80).map((ranked) => `- score=${ranked.score} ${short(ranked.edge.evidenceSession)}:${ranked.edge.evidenceLine} → ${short(ranked.edge.destination)} (${ranked.reasons.join(", ")})`),
     manifestBackedSegmentEdges.length > 80 ? `- ... ${manifestBackedSegmentEdges.length - 80} more` : "",
     "",
-    "## Segment-only best candidates",
+    "## Segment-only forensic best candidates",
     ...segmentOnlyCandidates.slice(0, 80).map((ranked) => `- score=${ranked.score} Δbirth=${ranked.destinationBirthDeltaSeconds ?? ""} ${short(ranked.edge.evidenceSession)}:${ranked.edge.evidenceLine} → ${short(ranked.edge.destination)} (${ranked.reasons.join(", ")})`),
     segmentOnlyCandidates.length > 80 ? `- ... ${segmentOnlyCandidates.length - 80} more` : "",
     "",
@@ -349,7 +367,7 @@ async function main() {
     ...uniqueTails.slice(0, 120).map((segment) => `- ${short(segment.session)}#${segment.segmentIndex} lines ${segment.startLine}-${segment.endLine} (${segment.lineCount} lines, ${segment.class}, repeatedInFiles=${segment.repeatedInFiles})`),
     uniqueTails.length > 120 ? `- ... ${uniqueTails.length - 120} more` : "",
     "",
-    "Note: this is a non-destructive sidecar index. Session JSONLs are not modified.",
+    "Note: this is a non-destructive forensic sidecar index. Transcript-derived segment evidence is not lineage truth unless backed by manifest or prefix evidence. Missing, truncated, and self-edge destinations are suppressed from segment-only candidates. Session JSONLs are not modified.",
     "",
   ].join("\n");
   await writeFile(mdPath, report);

@@ -1,6 +1,6 @@
 ---
 id: psg-xdgt
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:12:11Z

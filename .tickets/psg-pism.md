@@ -1,6 +1,6 @@
 ---
 id: psg-pism
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:04:45Z
