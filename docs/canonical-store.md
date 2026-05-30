@@ -529,6 +529,42 @@ Rules in priority order:
 6. shared provider session id can group into a logical thread but does not by itself prove chronological continuation.
 7. model/Semble suggestions are candidates only and cannot affect thread membership or resume targets without deterministic evidence or human curation.
 
+## Model/Semble merge suggestion boundary
+
+Semantic tools may propose merge/thread candidates, but those records are advisory only.
+
+Suggestion records should include:
+
+- candidate source/target sessions or observations
+- proposed relation
+- model/tool name and version
+- confidence as model confidence, not store truth confidence
+- reasons and metadata/hashes used
+- timestamp and provenance
+- required deterministic evidence or human approval before promotion
+
+No graph, availability, deletion, or resume behavior may depend solely on model suggestions. Promotion paths:
+
+1. deterministic evidence later confirms the suggestion, or
+2. a human writes a curated classification/evidence record.
+
+Suggested schema:
+
+```sql
+CREATE TABLE merge_suggestions (
+  id TEXT PRIMARY KEY,
+  source_session_id TEXT,
+  target_session_id TEXT,
+  proposed_relation TEXT NOT NULL,
+  suggester TEXT NOT NULL,
+  model_confidence TEXT,
+  status TEXT NOT NULL DEFAULT 'candidate',
+  created_at TEXT NOT NULL,
+  reasons_json TEXT NOT NULL DEFAULT '[]',
+  metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+```
+
 ## Derived logical threads / merge model
 
 Do not merge raw JSONL sessions. Instead create a derived logical merge layer:

@@ -1,6 +1,6 @@
 ---
 id: ass-merge-candidate-model-boundary
-status: open
+status: closed
 deps: [ass-deterministic-thread-rules]
 links: []
 created: 2026-05-30T04:00:00Z

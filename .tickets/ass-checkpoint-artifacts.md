@@ -1,6 +1,6 @@
 ---
 id: ass-checkpoint-artifacts
-status: open
+status: closed
 deps: [ass-logical-thread-tables]
 links: []
 created: 2026-05-30T03:40:00Z

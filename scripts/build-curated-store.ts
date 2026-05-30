@@ -18,6 +18,13 @@ const overlaysPath = join(graphDir, "lineage-overlays.jsonl");
 const preManifestPath = join(graphDir, "pre-manifest-lineage.json");
 const prefixLineagePath = join(graphDir, "prefix-lineage.json");
 const inventoryPath = join(graphDir, "temporal-inventory.json");
+const bucketReconciliationPath = join(storeDir, "session-bucket-reconciliation.json");
+const checkpointCandidatePaths = [
+	join(storeDir, "store-verification.md"),
+	join(storeDir, "backup-readiness.md"),
+	join(storeDir, "logical-threads.md"),
+	join(storeDir, "session-bucket-reconciliation.md"),
+];
 const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
 const sqlitePath = join(storeDir, "session-store.sqlite");
 
@@ -62,12 +69,14 @@ type Store = {
 	backupObservations: BackupObservation[];
 	repositories: Repository[];
 	artifacts: Artifact[];
+	checkpointArtifacts: CheckpointArtifact[];
 	observationMarks: ObservationMark[];
 	batchOperations: BatchOperation[];
 	logicalThreads: LogicalThread[];
 	threadMembers: ThreadMember[];
 	threadEdges: ThreadEdge[];
 	threadResumeTargets: ThreadResumeTarget[];
+	bucketStatuses: BucketStatus[];
 };
 
 type Source = { id: string; provider: string; kind: string; uri: string; label?: string; firstObservedAt?: string; lastObservedAt?: string; metadata?: Json };
@@ -82,12 +91,14 @@ type Evidence = { id: string; kind: string; sourceId?: string; targetType?: stri
 type BackupObservation = { id: string; sourceId: string; sessionObservationId?: string; snapshotLabel: string; snapshotTimestamp?: string; path: string; presence: "present" | "absent"; fileMtime?: string; fileBirthtime?: string; fileSize?: number; lineCount?: number; metadata?: Json };
 type Repository = { id: string; sourceId: string; path: string; name: string; remoteUrl?: string; vcs: string; firstCommitAt?: string; lastCommitAt?: string; firstCommit?: string; lastCommit?: string; metadata?: Json };
 type Artifact = { id: string; kind: string; path: string; generatedAt: string; generator: string; inputHash?: string; metadata?: Json };
+type CheckpointArtifact = { id: string; threadId?: string; sessionId?: string; observationId?: string; kind: string; path?: string; generatedAt: string; generator: string; inputHash?: string; privacyStatus: string; summary?: string; metadata?: Json };
 type ObservationMark = { id: string; observationId: string; markType: string; reason?: string; replacementObservationId?: string; source: string; timestamp: string; confidence: string; manualReviewRequired: boolean; metadata?: Json };
 type BatchOperation = { id: string; operationType: string; sourcePath: string; destinationPath: string; timestamp: string; source: string; status: string; metadata?: Json };
 type LogicalThread = { id: string; label?: string; confidence: string; source: string; metadata?: Json };
 type ThreadMember = { id: string; threadId: string; sessionId: string; observationId?: string; role: string; ordinal: number; metadata?: Json };
 type ThreadEdge = { id: string; threadId: string; sourceSessionId: string; targetSessionId: string; relation: string; edgeId?: string; confidence: string; source: string; metadata?: Json };
 type ThreadResumeTarget = { id: string; threadId: string; status: string; recommendedSessionId?: string; recommendedObservationId?: string; activeLeafSessionIds: string[]; recoverableSessionIds: string[]; reasons: string[]; metadata?: Json };
+type BucketStatus = { id: string; root: string; bucket: string; decodedPath?: string; status: string; confidence: string; sessionCount: number; earliest?: string; latest?: string; reasons: string[]; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -289,12 +300,14 @@ CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, kind TEXT NOT NULL, so
 CREATE TABLE IF NOT EXISTS backup_observations (id TEXT PRIMARY KEY, source_id TEXT, session_observation_id TEXT, snapshot_label TEXT NOT NULL, snapshot_timestamp TEXT, path TEXT NOT NULL, presence TEXT NOT NULL, file_mtime TEXT, file_birthtime TEXT, file_size INTEGER, line_count INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, source_id TEXT, path TEXT NOT NULL, name TEXT, remote_url TEXT, vcs TEXT, first_commit_at TEXT, last_commit_at TEXT, first_commit TEXT, last_commit TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL, generated_at TEXT NOT NULL, generator TEXT NOT NULL, input_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS checkpoint_artifacts (id TEXT PRIMARY KEY, thread_id TEXT, session_id TEXT, observation_id TEXT, kind TEXT NOT NULL, path TEXT, generated_at TEXT NOT NULL, generator TEXT NOT NULL, input_hash TEXT, privacy_status TEXT NOT NULL, summary TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS observation_marks (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, mark_type TEXT NOT NULL, reason TEXT, replacement_observation_id TEXT, source TEXT NOT NULL, timestamp TEXT NOT NULL, confidence TEXT NOT NULL, manual_review_required INTEGER NOT NULL DEFAULT 1, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, source_path TEXT NOT NULL, destination_path TEXT NOT NULL, timestamp TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS logical_threads (id TEXT PRIMARY KEY, label TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_members (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, session_id TEXT NOT NULL, observation_id TEXT, role TEXT NOT NULL, ordinal INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_edges (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, source_session_id TEXT NOT NULL, target_session_id TEXT NOT NULL, relation TEXT NOT NULL, edge_id TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_resume_targets (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, status TEXT NOT NULL, recommended_session_id TEXT, recommended_observation_id TEXT, active_leaf_session_ids_json TEXT NOT NULL DEFAULT '[]', recoverable_session_ids_json TEXT NOT NULL DEFAULT '[]', reasons_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS bucket_statuses (id TEXT PRIMARY KEY, root TEXT NOT NULL, bucket TEXT NOT NULL, decoded_path TEXT, status TEXT NOT NULL, confidence TEXT NOT NULL, session_count INTEGER NOT NULL, earliest TEXT, latest TEXT, reasons_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -304,7 +317,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 		db.exec("PRAGMA journal_mode = WAL");
 		initSqlite(db);
 		db.exec("BEGIN");
-		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets"]) db.exec(`DELETE FROM ${table}`);
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "checkpoint_artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets", "bucket_statuses"]) db.exec(`DELETE FROM ${table}`);
 		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
 		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -329,6 +342,8 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.repositories) repoStmt.run(r.id, r.sourceId, r.path, r.name, r.remoteUrl ?? null, r.vcs, r.firstCommitAt ?? null, r.lastCommitAt ?? null, r.firstCommit ?? null, r.lastCommit ?? null, json(r.metadata));
 		const artifactStmt = db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.artifacts) artifactStmt.run(r.id, r.kind, r.path, r.generatedAt, r.generator, r.inputHash ?? null, json(r.metadata));
+		const checkpointStmt = db.prepare("INSERT INTO checkpoint_artifacts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.checkpointArtifacts) checkpointStmt.run(r.id, r.threadId ?? null, r.sessionId ?? null, r.observationId ?? null, r.kind, r.path ?? null, r.generatedAt, r.generator, r.inputHash ?? null, r.privacyStatus, r.summary ?? null, json(r.metadata));
 		const markStmt = db.prepare("INSERT INTO observation_marks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.observationMarks) markStmt.run(r.id, r.observationId, r.markType, r.reason ?? null, r.replacementObservationId ?? null, r.source, r.timestamp, r.confidence, r.manualReviewRequired ? 1 : 0, json(r.metadata));
 		const batchStmt = db.prepare("INSERT INTO batch_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -341,6 +356,8 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.threadEdges) threadEdgeStmt.run(r.id, r.threadId, r.sourceSessionId, r.targetSessionId, r.relation, r.edgeId ?? null, r.confidence, r.source, json(r.metadata));
 		const resumeStmt = db.prepare("INSERT INTO thread_resume_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.threadResumeTargets) resumeStmt.run(r.id, r.threadId, r.status, r.recommendedSessionId ?? null, r.recommendedObservationId ?? null, json(r.activeLeafSessionIds), json(r.recoverableSessionIds), json(r.reasons), json(r.metadata));
+		const bucketStatusStmt = db.prepare("INSERT INTO bucket_statuses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.bucketStatuses) bucketStatusStmt.run(r.id, r.root, r.bucket, r.decodedPath ?? null, r.status, r.confidence, r.sessionCount, r.earliest ?? null, r.latest ?? null, json(r.reasons), json(r.metadata));
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
@@ -357,8 +374,9 @@ async function main() {
 	const preManifest = await readJson<Json>(preManifestPath);
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
 	const inventory = await readJson<Json>(inventoryPath);
+	const bucketReconciliation = await readJson<{ buckets?: (Json & { root?: string; bucket?: string; decodedPath?: string; status?: string; confidence?: string; sessionCount?: number; earliest?: string; latest?: string; reasons?: string[] })[] }>(bucketReconciliationPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
@@ -367,6 +385,7 @@ async function main() {
 	const preSource = addSource("manual-curation", "curated_report", preManifestPath, "Pre-manifest lineage report");
 	const prefixSource = addSource("manual-curation", "curated_report", prefixLineagePath, "Prefix lineage report");
 	const oldRepoSource = addSource("git-repository", "repository_collection", oldExtensionsDir, "Old extension repositories");
+	const bucketReconciliationSource = addSource("manual-curation", "bucket_reconciliation", bucketReconciliationPath, "Session bucket reconciliation");
 	store.importRuns.push({ id: id("run", generatedAt, "build-curated-store"), sourceId: liveSource, startedAt: generatedAt, finishedAt: generatedAt, tool: "scripts/build-curated-store.ts", status: "ok", stats: { manifestRecords: manifest.length, overlayRecords: overlays.length } });
 
 	const paths = new Set<string>(await listSessionFiles());
@@ -431,6 +450,22 @@ async function main() {
 	}
 	if (prefixLineage) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "prefix-lineage", prefixLineagePath), kind: "prefix_match", sourceId: prefixSource, confidence: "medium", summary: "Prefix lineage report imported as evidence", data: { generatedAt: prefixLineage.generatedAt } });
 	if (inventory) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", inventoryPath), kind: "inventory", path: inventoryPath, generatedAt, generator: "scripts/build-temporal-lineage.ts", metadata: { imported: true } });
+	if (preManifest) store.checkpointArtifacts.push({ id: id("checkpoint", preManifestPath), kind: "curated_reconstruction_summary", path: preManifestPath, generatedAt, generator: "manual-curated-sidecar", inputHash: sha(JSON.stringify(preManifest)), privacyStatus: "metadata-only", summary: "Pre-manifest lineage curated reconstruction summary", metadata: { source: preManifestPath } });
+	if (prefixLineage) store.checkpointArtifacts.push({ id: id("checkpoint", prefixLineagePath), kind: "prefix_lineage_summary", path: prefixLineagePath, generatedAt, generator: "scripts/reconstruct-prefix-lineage.ts", inputHash: sha(JSON.stringify(prefixLineage)), privacyStatus: "metadata-only", summary: "Prefix/common-prefix lineage reconstruction summary", metadata: { source: prefixLineagePath } });
+	for (const path of checkpointCandidatePaths) {
+		const raw = await readFile(path, "utf8").catch(() => undefined);
+		if (!raw) continue;
+		store.checkpointArtifacts.push({ id: id("checkpoint", path), kind: "report_checkpoint", path, generatedAt, generator: "agent-session-store", inputHash: sha(raw), privacyStatus: "metadata-only", summary: basename(path), metadata: { source: path } });
+	}
+	if (bucketReconciliation?.buckets) {
+		for (const bucket of bucketReconciliation.buckets) {
+			if (!bucket.root || !bucket.bucket || !bucket.status || !bucket.confidence) continue;
+			const statusId = id("bucket", bucket.root, bucket.bucket);
+			store.bucketStatuses.push({ id: statusId, root: bucket.root, bucket: bucket.bucket, decodedPath: bucket.decodedPath, status: bucket.status, confidence: bucket.confidence, sessionCount: bucket.sessionCount ?? 0, earliest: bucket.earliest, latest: bucket.latest, reasons: bucket.reasons ?? [], metadata: bucket });
+			pushUnique(store.evidence, seen.evidence, { id: id("evidence", "bucket", bucket.root, bucket.bucket), kind: "bucket_reconciliation", sourceId: bucketReconciliationSource, confidence: bucket.confidence, summary: `${bucket.status}: ${bucket.decodedPath ?? bucket.bucket}`, data: bucket });
+		}
+		pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", bucketReconciliationPath), kind: "bucket_reconciliation", path: bucketReconciliationPath, generatedAt, generator: "scripts/inventory-session-buckets.ts", metadata: { imported: true, bucketCount: bucketReconciliation.buckets.length } });
+	}
 
 	for (const repoPath of await findGitRoots(oldExtensionsDir)) {
 		const info = await gitInfo(repoPath);
@@ -442,7 +477,7 @@ async function main() {
 	deriveLogicalThreads(store);
 	deriveResumeTargets(store);
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
-	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
+	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";
