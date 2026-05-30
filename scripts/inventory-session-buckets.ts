@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
@@ -8,10 +8,16 @@ const sessionsDir = join(agentDir, "sessions");
 const codingSessionsDir = join(home, "Downloads", "coding-sessions");
 const outDir = join(agentDir, "session-store");
 const graphDir = join(agentDir, "session-graph");
+const manifestPath = join(agentDir, "relocations.jsonl");
+const overlaysPath = join(graphDir, "lineage-overlays.jsonl");
 
-type Bucket = { root: string; bucket: string; decodedPath?: string; exists?: boolean; sessionCount: number; earliest?: string; latest?: string; files: string[] };
+type Status = "active-exact" | "active-via-cwd" | "moved-or-renamed-candidate" | "missing-unclassified" | "decode-ambiguous" | "external-import";
+type Bucket = { root: string; bucket: string; decodedPath?: string; decodedExists?: boolean; cwdCandidates: string[]; cwdExists: Record<string, boolean>; manifestCwds: string[]; overlayLabels: string[]; sameBasenameCandidates: string[]; status: Status; confidence: "high" | "medium" | "low"; reasons: string[]; sessionCount: number; earliest?: string; latest?: string; files: string[] };
+type Manifest = { fromCwd?: string; toCwd?: string; sourceSession?: string; destinationSession?: string };
+type Overlay = { kind?: string; path?: string; label?: string; cwd?: string; session?: string };
 
 async function exists(path: string) { try { await stat(path); return true; } catch { return false; } }
+async function readJsonl<T>(path: string): Promise<T[]> { const raw = await readFile(path, "utf8").catch(() => ""); return raw.split("\n").filter((l) => l.trim()).flatMap((l) => { try { return [JSON.parse(l) as T]; } catch { return []; } }); }
 function decodeBucket(bucket: string): string | undefined {
 	if (!bucket.startsWith("--") || !bucket.endsWith("--")) return undefined;
 	const inner = bucket.slice(2, -2);
@@ -20,6 +26,16 @@ function decodeBucket(bucket: string): string | undefined {
 	return `/${inner.replaceAll("-", "/")}`;
 }
 function tsFromFile(file: string) { return file.match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/)?.[1]?.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z"); }
+function rowCwd(row: Record<string, unknown>) { if (typeof row.cwd === "string") return row.cwd; const session = row.session as Record<string, unknown> | undefined; return typeof session?.cwd === "string" ? session.cwd : undefined; }
+async function cwdsFromSession(path: string): Promise<string[]> {
+	const raw = await readFile(path, "utf8").catch(() => "");
+	const found = new Set<string>();
+	for (const line of raw.split("\n")) {
+		if (!line.trim()) continue;
+		try { const cwd = rowCwd(JSON.parse(line) as Record<string, unknown>); if (cwd) found.add(cwd); } catch { /* ignore */ }
+	}
+	return [...found].sort((a, b) => b.length - a.length);
+}
 async function findSessionRoots(root: string): Promise<string[]> {
 	const roots: string[] = [];
 	async function walk(dir: string, depth: number) {
@@ -31,49 +47,97 @@ async function findSessionRoots(root: string): Promise<string[]> {
 	if (await exists(root)) await walk(root, 0);
 	return [...new Set(roots)].sort();
 }
-async function scanRoot(root: string): Promise<Bucket[]> {
+async function findSameBasename(name: string): Promise<string[]> {
+	if (!name || name === "/") return [];
+	const searchRoots = [join(home, "git", "agents"), join(home, "git", "public"), join(home, "git", "private"), join(home, "git", "bespoke-thinking")];
+	const out: string[] = [];
+	async function walk(dir: string, depth: number) {
+		if (depth > 4 || out.length > 20) return;
+		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) {
+			if (!entry.isDirectory() || ["node_modules", ".git", ".jj"].includes(entry.name)) continue;
+			const path = join(dir, entry.name);
+			if (entry.name === name) out.push(path);
+			await walk(path, depth + 1);
+		}
+	}
+	for (const root of searchRoots) if (await exists(root)) await walk(root, 0);
+	return [...new Set(out)].sort();
+}
+function classify(root: string, decodedPath: string | undefined, decodedExists: boolean | undefined, cwdCandidates: string[], cwdExists: Record<string, boolean>, sameBasenameCandidates: string[]): { status: Status; confidence: "high" | "medium" | "low"; reasons: string[] } {
+	const reasons: string[] = [];
+	if (root !== sessionsDir) return { status: "external-import", confidence: "high", reasons: ["session root is outside live Pi sessions"] };
+	if (decodedPath && decodedExists) return { status: "active-exact", confidence: "medium", reasons: ["decoded bucket path exists", "bucket decoding is lossy"] };
+	const existingCwd = cwdCandidates.find((cwd) => cwdExists[cwd]);
+	if (existingCwd) return { status: "active-via-cwd", confidence: "high", reasons: [`session row cwd exists: ${existingCwd}`] };
+	if (sameBasenameCandidates.length) return { status: "moved-or-renamed-candidate", confidence: "low", reasons: [`same basename exists elsewhere: ${sameBasenameCandidates.slice(0, 3).join(", ")}`, "requires manual review"] };
+	if (decodedPath && decodedPath.includes("/")) reasons.push("decoded path does not exist");
+	if (!cwdCandidates.length) reasons.push("no cwd metadata found in sampled session rows");
+	return { status: decodedPath ? "missing-unclassified" : "decode-ambiguous", confidence: "low", reasons };
+}
+async function scanRoot(root: string, manifest: Manifest[], overlays: Overlay[]): Promise<Bucket[]> {
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 	const buckets: Bucket[] = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory() || !entry.name.startsWith("--") || !entry.name.endsWith("--")) continue;
 		const dir = join(root, entry.name);
 		const files = (await readdir(dir).catch(() => [])).filter((f) => f.endsWith(".jsonl")).sort();
+		const fullFiles = files.map((f) => join(dir, f));
 		const times = files.map(tsFromFile).filter((v): v is string => Boolean(v)).sort();
 		const decodedPath = decodeBucket(entry.name);
-		buckets.push({ root, bucket: entry.name, decodedPath, exists: decodedPath ? await exists(decodedPath) : undefined, sessionCount: files.length, earliest: times[0], latest: times.at(-1), files: files.map((f) => join(dir, f)) });
+		const decodedExists = decodedPath ? await exists(decodedPath) : undefined;
+		const cwdSet = new Set<string>();
+		for (const file of fullFiles.slice(-5)) for (const cwd of await cwdsFromSession(file)) cwdSet.add(cwd);
+		const cwdCandidates = [...cwdSet].sort((a, b) => b.length - a.length);
+		const cwdExists = Object.fromEntries(await Promise.all(cwdCandidates.map(async (cwd) => [cwd, await exists(cwd)])));
+		const manifestCwds = [...new Set(manifest.flatMap((m) => fullFiles.includes(m.sourceSession ?? "") ? [m.fromCwd].filter(Boolean) as string[] : fullFiles.includes(m.destinationSession ?? "") ? [m.toCwd].filter(Boolean) as string[] : []))];
+		const overlayLabels = [...new Set(overlays.flatMap((o) => o.session && fullFiles.includes(o.session) ? [o.cwd, o.label].filter(Boolean) as string[] : o.path === decodedPath ? [o.label].filter(Boolean) as string[] : []))];
+		const sameBasenameCandidates = await findSameBasename(basename(cwdCandidates[0] ?? decodedPath ?? ""));
+		const { status, confidence, reasons } = classify(root, decodedPath, decodedExists, cwdCandidates, cwdExists, sameBasenameCandidates);
+		buckets.push({ root, bucket: entry.name, decodedPath, decodedExists, cwdCandidates, cwdExists, manifestCwds, overlayLabels, sameBasenameCandidates, status, confidence, reasons, sessionCount: files.length, earliest: times[0], latest: times.at(-1), files: fullFiles });
 	}
 	return buckets.sort((a, b) => (b.sessionCount - a.sessionCount) || a.bucket.localeCompare(b.bucket));
 }
 
+const manifest = await readJsonl<Manifest>(manifestPath);
+const overlays = await readJsonl<Overlay>(overlaysPath);
 const roots = [sessionsDir, ...(await findSessionRoots(codingSessionsDir))].filter((v, i, a) => a.indexOf(v) === i);
-const buckets = (await Promise.all(roots.map(scanRoot))).flat();
-const missing = buckets.filter((b) => b.decodedPath && b.exists === false);
-const payload = { generatedAt: new Date().toISOString(), roots, bucketCount: buckets.length, missingCount: missing.length, buckets };
+const buckets = (await Promise.all(roots.map((root) => scanRoot(root, manifest, overlays)))).flat();
+const byStatus = buckets.reduce<Record<string, number>>((acc, bucket) => { acc[bucket.status] = (acc[bucket.status] ?? 0) + 1; return acc; }, {});
+const payload = { generatedAt: new Date().toISOString(), roots, bucketCount: buckets.length, byStatus, buckets };
 await mkdir(outDir, { recursive: true });
 await mkdir(graphDir, { recursive: true });
 await writeFile(join(outDir, "session-bucket-inventory.json"), JSON.stringify(payload, null, 2) + "\n");
+await writeFile(join(outDir, "session-bucket-reconciliation.json"), JSON.stringify(payload, null, 2) + "\n");
 const report = [
-	"# Session bucket inventory",
+	"# Session bucket reconciliation",
 	"",
 	`Generated: ${payload.generatedAt}`,
 	"",
 	"## Roots",
 	...roots.map((r) => `- ${r}`),
 	"",
-	`Buckets: ${buckets.length}`,
-	`Missing decoded paths: ${missing.length}`,
+	"## Status counts",
+	...Object.entries(byStatus).sort().map(([status, count]) => `- ${status}: ${count}`),
 	"",
-	"## Missing/deprecated decoded paths",
-	...missing.slice(0, 200).map((b) => `- ${b.decodedPath} (${b.sessionCount} sessions, ${b.earliest ?? "?"} → ${b.latest ?? "?"}, root=${b.root})`),
-	missing.length > 200 ? `- ... ${missing.length - 200} more` : "",
+	"## Moved/renamed candidates",
+	...buckets.filter((b) => b.status === "moved-or-renamed-candidate").slice(0, 100).map((b) => `- ${b.decodedPath ?? b.bucket} (${b.sessionCount} sessions, ${b.earliest ?? "?"} → ${b.latest ?? "?"}) candidates=${b.sameBasenameCandidates.slice(0, 5).join(", ")}`),
+	"",
+	"## Missing unclassified",
+	...buckets.filter((b) => b.status === "missing-unclassified").slice(0, 150).map((b) => `- ${b.decodedPath ?? b.bucket} (${b.sessionCount} sessions, ${b.earliest ?? "?"} → ${b.latest ?? "?"}; reasons=${b.reasons.join("; ")})`),
+	"",
+	"## External imports",
+	...buckets.filter((b) => b.status === "external-import").map((b) => `- ${b.root} :: ${b.decodedPath ?? b.bucket} (${b.sessionCount} sessions)`),
 	"",
 	"## Largest buckets",
-	...buckets.slice(0, 100).map((b) => `- ${b.decodedPath ?? b.bucket}: ${b.sessionCount} sessions, exists=${b.exists}, ${b.earliest ?? "?"} → ${b.latest ?? "?"}`),
+	...buckets.slice(0, 100).map((b) => `- [${b.status}/${b.confidence}] ${b.cwdCandidates[0] ?? b.decodedPath ?? b.bucket}: ${b.sessionCount} sessions, decodedExists=${b.decodedExists}, ${b.earliest ?? "?"} → ${b.latest ?? "?"}`),
 	"",
-	"Note: bucket decoding is lossy for hyphens vs path separators. Treat decoded paths as guesses unless corroborated by session cwd metadata or manifest/store labels.",
+	"Note: missing paths are not declared deleted/deprecated by this report. Bucket decoding is lossy for hyphens vs path separators; use cwd metadata, aliases, manifests, and manual review for stronger classification.",
 	"",
 ].join("\n");
 await writeFile(join(outDir, "session-bucket-inventory.md"), report);
+await writeFile(join(outDir, "session-bucket-reconciliation.md"), report);
 await writeFile(join(graphDir, "session-bucket-inventory.md"), report);
-console.log(`Wrote ${join(outDir, "session-bucket-inventory.md")}`);
-console.log(`Discovered ${buckets.length} buckets across ${roots.length} roots; ${missing.length} decoded paths missing.`);
+await writeFile(join(graphDir, "session-bucket-reconciliation.md"), report);
+console.log(`Wrote ${join(outDir, "session-bucket-reconciliation.md")}`);
+console.log(`Discovered ${buckets.length} buckets across ${roots.length} roots: ${JSON.stringify(byStatus)}`);
