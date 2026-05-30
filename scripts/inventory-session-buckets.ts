@@ -6,6 +6,8 @@ const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
 const sessionsDir = join(agentDir, "sessions");
 const codingSessionsDir = join(home, "Downloads", "coding-sessions");
+const sessionBackupsDir = join(home, "Downloads", "session-backups");
+const gitRoot = join(home, "git");
 const outDir = join(agentDir, "session-store");
 const graphDir = join(agentDir, "session-graph");
 const manifestPath = join(agentDir, "relocations.jsonl");
@@ -39,7 +41,7 @@ async function cwdsFromSession(path: string): Promise<string[]> {
 async function findSessionRoots(root: string): Promise<string[]> {
 	const roots: string[] = [];
 	async function walk(dir: string, depth: number) {
-		if (depth > 6) return;
+		if (depth > 12) return;
 		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
 		if (entries.some((e) => e.isDirectory() && e.name.startsWith("--") && e.name.endsWith("--"))) roots.push(dir);
 		for (const entry of entries) if (entry.isDirectory() && !["node_modules", ".git", ".jj"].includes(entry.name)) await walk(join(dir, entry.name), depth + 1);
@@ -47,22 +49,28 @@ async function findSessionRoots(root: string): Promise<string[]> {
 	if (await exists(root)) await walk(root, 0);
 	return [...new Set(roots)].sort();
 }
-async function findSameBasename(name: string): Promise<string[]> {
-	if (!name || name === "/") return [];
-	const searchRoots = [join(home, "git", "agents"), join(home, "git", "public"), join(home, "git", "private"), join(home, "git", "bespoke-thinking")];
+async function findGitRepos(root: string): Promise<string[]> {
 	const out: string[] = [];
 	async function walk(dir: string, depth: number) {
-		if (depth > 4 || out.length > 20) return;
+		if (depth > 8) return;
 		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+		if (entries.some((entry) => entry.isDirectory() && entry.name === ".git")) {
+			out.push(dir);
+			return;
+		}
 		for (const entry of entries) {
-			if (!entry.isDirectory() || ["node_modules", ".git", ".jj"].includes(entry.name)) continue;
-			const path = join(dir, entry.name);
-			if (entry.name === name) out.push(path);
-			await walk(path, depth + 1);
+			if (!entry.isDirectory() || ["node_modules", ".git", ".jj", "target", "dist", "Library"].includes(entry.name)) continue;
+			await walk(join(dir, entry.name), depth + 1);
 		}
 	}
-	for (const root of searchRoots) if (await exists(root)) await walk(root, 0);
+	if (await exists(root)) await walk(root, 0);
 	return [...new Set(out)].sort();
+}
+function compactName(value: string) { return value.toLowerCase().replace(/[^a-z0-9]/g, ""); }
+function sameRepoCandidates(name: string, cwdCandidates: string[], decodedPath: string | undefined, gitRepos: string[]): string[] {
+	const names = new Set([name, ...cwdCandidates.map((cwd) => basename(cwd)), decodedPath ? basename(decodedPath) : undefined].filter((v): v is string => Boolean(v && v !== "/")));
+	const compactNames = new Set([...names].map(compactName));
+	return gitRepos.filter((repo) => names.has(basename(repo)) || compactNames.has(compactName(basename(repo)))).slice(0, 25);
 }
 function classify(root: string, decodedPath: string | undefined, decodedExists: boolean | undefined, cwdCandidates: string[], cwdExists: Record<string, boolean>, sameBasenameCandidates: string[]): { status: Status; confidence: "high" | "medium" | "low"; reasons: string[] } {
 	const reasons: string[] = [];
@@ -75,7 +83,7 @@ function classify(root: string, decodedPath: string | undefined, decodedExists: 
 	if (!cwdCandidates.length) reasons.push("no cwd metadata found in sampled session rows");
 	return { status: decodedPath ? "missing-unclassified" : "decode-ambiguous", confidence: "low", reasons };
 }
-async function scanRoot(root: string, manifest: Manifest[], overlays: Overlay[]): Promise<Bucket[]> {
+async function scanRoot(root: string, manifest: Manifest[], overlays: Overlay[], gitRepos: string[]): Promise<Bucket[]> {
 	const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
 	const buckets: Bucket[] = [];
 	for (const entry of entries) {
@@ -92,7 +100,7 @@ async function scanRoot(root: string, manifest: Manifest[], overlays: Overlay[])
 		const cwdExists = Object.fromEntries(await Promise.all(cwdCandidates.map(async (cwd) => [cwd, await exists(cwd)])));
 		const manifestCwds = [...new Set(manifest.flatMap((m) => fullFiles.includes(m.sourceSession ?? "") ? [m.fromCwd].filter(Boolean) as string[] : fullFiles.includes(m.destinationSession ?? "") ? [m.toCwd].filter(Boolean) as string[] : []))];
 		const overlayLabels = [...new Set(overlays.flatMap((o) => o.session && fullFiles.includes(o.session) ? [o.cwd, o.label].filter(Boolean) as string[] : o.path === decodedPath ? [o.label].filter(Boolean) as string[] : []))];
-		const sameBasenameCandidates = await findSameBasename(basename(cwdCandidates[0] ?? decodedPath ?? ""));
+		const sameBasenameCandidates = sameRepoCandidates(basename(cwdCandidates[0] ?? decodedPath ?? ""), cwdCandidates, decodedPath, gitRepos);
 		const { status, confidence, reasons } = classify(root, decodedPath, decodedExists, cwdCandidates, cwdExists, sameBasenameCandidates);
 		buckets.push({ root, bucket: entry.name, decodedPath, decodedExists, cwdCandidates, cwdExists, manifestCwds, overlayLabels, sameBasenameCandidates, status, confidence, reasons, sessionCount: files.length, earliest: times[0], latest: times.at(-1), files: fullFiles });
 	}
@@ -101,10 +109,11 @@ async function scanRoot(root: string, manifest: Manifest[], overlays: Overlay[])
 
 const manifest = await readJsonl<Manifest>(manifestPath);
 const overlays = await readJsonl<Overlay>(overlaysPath);
-const roots = [sessionsDir, ...(await findSessionRoots(codingSessionsDir))].filter((v, i, a) => a.indexOf(v) === i);
-const buckets = (await Promise.all(roots.map((root) => scanRoot(root, manifest, overlays)))).flat();
+const roots = [sessionsDir, ...(await findSessionRoots(codingSessionsDir)), ...(await findSessionRoots(sessionBackupsDir))].filter((v, i, a) => a.indexOf(v) === i);
+const gitRepos = await findGitRepos(gitRoot);
+const buckets = (await Promise.all(roots.map((root) => scanRoot(root, manifest, overlays, gitRepos)))).flat();
 const byStatus = buckets.reduce<Record<string, number>>((acc, bucket) => { acc[bucket.status] = (acc[bucket.status] ?? 0) + 1; return acc; }, {});
-const payload = { generatedAt: new Date().toISOString(), roots, bucketCount: buckets.length, byStatus, buckets };
+const payload = { generatedAt: new Date().toISOString(), roots, gitRoot, gitRepoCount: gitRepos.length, bucketCount: buckets.length, byStatus, buckets };
 await mkdir(outDir, { recursive: true });
 await mkdir(graphDir, { recursive: true });
 await writeFile(join(outDir, "session-bucket-inventory.json"), JSON.stringify(payload, null, 2) + "\n");
@@ -116,6 +125,8 @@ const report = [
 	"",
 	"## Roots",
 	...roots.map((r) => `- ${r}`),
+	"",
+	`Git repos scanned under ${gitRoot}: ${gitRepos.length}`,
 	"",
 	"## Status counts",
 	...Object.entries(byStatus).sort().map(([status, count]) => `- ${status}: ${count}`),
