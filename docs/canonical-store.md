@@ -483,6 +483,45 @@ Default imports do not store:
 
 Raw transcript paths may be referenced as source URIs if the files remain local/private.
 
+## Repo/bucket batch relocation
+
+A repository/cwd bucket can contain many sessions. Moving a repo should support a batch relocation operation instead of only relocating the current session.
+
+Design records:
+
+- `batch_operations`: operation id, type `bucket_relocation`, source bucket/path, destination bucket/path, timestamp, source tool, dry-run/apply status, counts, metadata.
+- per-session `edges`: one relocation/copy edge for each copied session observation.
+- per-observation marks: old observations are marked `superseded` or `deletion_candidate`, never deleted automatically.
+
+Batch relocation must be idempotent. Re-running should detect existing destination observations/edges by source observation, destination path, and operation id.
+
+## Observation marks and retention
+
+Add derived marks for raw session observations:
+
+- `active`
+- `superseded`
+- `archived`
+- `deletion_candidate`
+
+Marks need provenance, timestamp, reason, confidence, replacement observation/session when known, and a manual-review requirement. Tools may report deletion candidates, but must not delete raw sessions by default.
+
+## Derived logical threads / merge model
+
+Do not merge raw JSONL sessions. Instead create a derived logical merge layer:
+
+- `logical_threads`: human/provider/algorithmic grouping of related sessions.
+- `thread_members`: ordered membership of raw sessions/observations with role (`canonical_path`, `fork`, `continuation`, `context_jump`, `reference`).
+- `thread_edges`: derived continuation/fork/context-jump edges for display and reports.
+
+This gives a merged view while keeping raw sessions immutable and preserving forks.
+
+## Derived checkpoints and summaries
+
+Finite context should use derived checkpoint/summary artifacts, not raw transcript concatenation.
+
+Checkpoint artifacts should link to logical threads or session observations and record provenance, input hashes, timestamp, summary kind, privacy status, and curator/importer source. Raw transcript content is not stored by default.
+
 ## Open decisions
 
 - SQLite library choice for TypeScript (`node:sqlite` vs dependency) once implementation starts.
