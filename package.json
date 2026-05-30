@@ -1,0 +1,27 @@
+{
+  "name": "agent-session-store",
+  "version": "0.1.0",
+  "description": "Canonical store and import/reconstruction tooling for agent session lineage.",
+  "type": "module",
+  "scripts": {
+    "lint": "tsc --noEmit",
+    "reconstruct": "tsx scripts/reconstruct-local-history.ts",
+    "validate-timeline": "tsx scripts/validate-session-timeline.ts",
+    "index-segments": "tsx scripts/index-session-segments.ts",
+    "prefix-lineage": "tsx scripts/reconstruct-prefix-lineage.ts",
+    "temporal-lineage": "tsx scripts/build-temporal-lineage.ts"
+  },
+  "keywords": [
+    "agent",
+    "session",
+    "lineage",
+    "store",
+    "reconstruction"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "latest",
+    "tsx": "^4.22.3",
+    "typescript": "latest"
+  }
+}
