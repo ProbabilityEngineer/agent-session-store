@@ -506,6 +506,29 @@ Add derived marks for raw session observations:
 
 Marks need provenance, timestamp, reason, confidence, replacement observation/session when known, and a manual-review requirement. Tools may report deletion candidates, but must not delete raw sessions by default.
 
+## Deterministic relationship rules
+
+Thread membership and edge relations must be derived from deterministic evidence before any model/semantic suggestion is allowed to affect graph or resume behavior.
+
+Relationship classes:
+
+- `continuation`: explicit relocation/manifest or prefix-backed continuation, move semantics, no curated context-jump classification.
+- `fork`: explicit branch/copy relocation, multiple destinations from the same source, or parallel active children from the same source.
+- `context_jump`: explicit relocation event but curated/deterministic evidence says the destination is a new task/lineage rather than project continuation.
+- `sibling`: sessions share cwd/project/provider id but lack direct prefix/relocation edge.
+- `unrelated`: deterministic evidence contradicts shared lineage.
+- `unknown`: insufficient deterministic evidence.
+
+Rules in priority order:
+
+1. curated `context-jump` classification wins and prevents merge-as-continuation.
+2. explicit branch/copy mode is `fork`.
+3. explicit move relocation is `continuation` unless classified otherwise.
+4. multiple children from one source are forks/branches at the topology level even when each edge is a valid continuation.
+5. prefix/common-prefix evidence can support continuation but transcript text alone is forensic, not authoritative.
+6. shared provider session id can group into a logical thread but does not by itself prove chronological continuation.
+7. model/Semble suggestions are candidates only and cannot affect thread membership or resume targets without deterministic evidence or human curation.
+
 ## Derived logical threads / merge model
 
 Do not merge raw JSONL sessions. Instead create a derived logical merge layer:

@@ -1,6 +1,6 @@
 ---
 id: ass-deterministic-thread-rules
-status: open
+status: closed
 deps: [ass-logical-thread-tables]
 links: []
 created: 2026-05-30T04:00:00Z

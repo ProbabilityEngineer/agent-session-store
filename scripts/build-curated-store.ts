@@ -220,12 +220,21 @@ function deriveLogicalThreads(store: Store) {
 	}
 	const threadBySession = new Map<string, string>();
 	for (const member of store.threadMembers) threadBySession.set(member.sessionId, member.threadId);
+	const childCounts = new Map<string, number>();
+	for (const edge of store.edges) childCounts.set(edge.sourceSessionId, (childCounts.get(edge.sourceSessionId) ?? 0) + 1);
 	for (const edge of store.edges) {
 		const threadId = threadBySession.get(edge.sourceSessionId);
 		if (!threadId || threadBySession.get(edge.targetSessionId) !== threadId) continue;
-		const classification = store.classifications.find((item) => item.targetType === "edge" && item.targetId === edge.id)?.classification;
-		const relation = classification?.includes("context") ? "context_jump" : edge.edgeType === "branch" ? "fork" : "continuation";
-		store.threadEdges.push({ id: id("thread_edge", threadId, edge.id), threadId, sourceSessionId: edge.sourceSessionId, targetSessionId: edge.targetSessionId, relation, edgeId: edge.id, confidence: edge.confidence, source: edge.provenance, metadata: { classification, edgeType: edge.edgeType } });
+		const edgeClassifications = store.classifications.filter((item) => item.targetType === "edge" && item.targetId === edge.id).map((item) => item.classification);
+		let relation: string;
+		const reasons: string[] = [];
+		if (edgeClassifications.some((classification) => classification.includes("context"))) { relation = "context_jump"; reasons.push("curated-context-classification"); }
+		else if (edge.edgeType === "branch" || edge.metadata?.mode === "branch") { relation = "fork"; reasons.push("explicit-branch-mode"); }
+		else if ((childCounts.get(edge.sourceSessionId) ?? 0) > 1) { relation = "fork"; reasons.push("multiple-children-from-source"); }
+		else if (edge.provenance === "pi-relocate-manifest" && edge.confidence === "authoritative") { relation = "continuation"; reasons.push("authoritative-manifest-move"); }
+		else if (edgeClassifications.some((classification) => classification.includes("continuation"))) { relation = "continuation"; reasons.push("curated-continuation-classification"); }
+		else { relation = "unknown"; reasons.push("insufficient-deterministic-evidence"); }
+		store.threadEdges.push({ id: id("thread_edge", threadId, edge.id), threadId, sourceSessionId: edge.sourceSessionId, targetSessionId: edge.targetSessionId, relation, edgeId: edge.id, confidence: edge.confidence, source: edge.provenance, metadata: { classifications: edgeClassifications, edgeType: edge.edgeType, reasons } });
 	}
 }
 
