@@ -1,6 +1,6 @@
 ---
 id: ass-ofah
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T02:53:34Z

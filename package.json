@@ -10,7 +10,8 @@
     "index-segments": "tsx scripts/index-session-segments.ts",
     "prefix-lineage": "tsx scripts/reconstruct-prefix-lineage.ts",
     "temporal-lineage": "tsx scripts/build-temporal-lineage.ts",
-    "build-store": "tsx scripts/build-curated-store.ts"
+    "build-store": "tsx scripts/build-curated-store.ts",
+    "backup-readiness": "tsx scripts/backup-readiness-report.ts"
   },
   "keywords": [
     "agent",

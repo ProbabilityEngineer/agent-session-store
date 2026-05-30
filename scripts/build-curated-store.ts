@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 import { execFile } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,7 @@ const preManifestPath = join(graphDir, "pre-manifest-lineage.json");
 const prefixLineagePath = join(graphDir, "prefix-lineage.json");
 const inventoryPath = join(graphDir, "temporal-inventory.json");
 const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
+const sqlitePath = join(storeDir, "session-store.sqlite");
 
 type Json = Record<string, unknown>;
 
@@ -162,6 +164,65 @@ async function findGitRoots(root: string): Promise<string[]> {
 }
 
 function pushUnique<T extends { id: string }>(array: T[], seen: Set<string>, item: T) { if (!seen.has(item.id)) { seen.add(item.id); array.push(item); } }
+function json(value: unknown) { return JSON.stringify(value ?? {}); }
+
+function initSqlite(db: DatabaseSync) {
+	db.exec(`
+CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, uri TEXT NOT NULL, label TEXT, first_observed_at TEXT, last_observed_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS import_runs (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, tool TEXT NOT NULL, status TEXT NOT NULL, stats_json TEXT NOT NULL DEFAULT '{}', notes TEXT);
+CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_session_id TEXT, canonical_key TEXT NOT NULL UNIQUE, first_seen_at TEXT, last_seen_at TEXT, start_timestamp TEXT, end_timestamp TEXT, event_count INTEGER, line_count INTEGER, byte_count INTEGER, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS session_observations (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, path TEXT, provider_session_id TEXT, observed_at TEXT, snapshot_label TEXT, file_birthtime TEXT, file_mtime TEXT, file_size INTEGER, line_count INTEGER, first_event_at TEXT, last_event_at TEXT, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, provider TEXT NOT NULL, provider_event_id TEXT, event_type TEXT NOT NULL, timestamp TEXT, ordinal INTEGER, role TEXT, tool_name TEXT, summary TEXT, content_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS edges (id TEXT PRIMARY KEY, source_session_id TEXT, target_session_id TEXT, edge_type TEXT NOT NULL, timestamp TEXT, source_observation_id TEXT, target_observation_id TEXT, confidence TEXT NOT NULL, provenance TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, label_type TEXT NOT NULL, value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source_id TEXT, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS aliases (id TEXT PRIMARY KEY, alias_type TEXT NOT NULL, from_value TEXT NOT NULL, to_value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, evidence_id TEXT, notes TEXT);
+CREATE TABLE IF NOT EXISTS classifications (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, classification TEXT NOT NULL, confidence TEXT NOT NULL, source TEXT NOT NULL, evidence_id TEXT, notes TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, kind TEXT NOT NULL, source_id TEXT, target_type TEXT, target_id TEXT, timestamp TEXT, confidence TEXT NOT NULL, summary TEXT NOT NULL, data_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS backup_observations (id TEXT PRIMARY KEY, source_id TEXT, session_observation_id TEXT, snapshot_label TEXT NOT NULL, snapshot_timestamp TEXT, path TEXT NOT NULL, presence TEXT NOT NULL, file_mtime TEXT, file_birthtime TEXT, file_size INTEGER, line_count INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, source_id TEXT, path TEXT NOT NULL, name TEXT, remote_url TEXT, vcs TEXT, first_commit_at TEXT, last_commit_at TEXT, first_commit TEXT, last_commit TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL, generated_at TEXT NOT NULL, generator TEXT NOT NULL, input_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+`);
+}
+
+function replaceSqlite(dbPath: string, store: Store) {
+	const db = new DatabaseSync(dbPath);
+	try {
+		db.exec("PRAGMA journal_mode = WAL");
+		initSqlite(db);
+		db.exec("BEGIN");
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts"]) db.exec(`DELETE FROM ${table}`);
+		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
+		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.importRuns) runStmt.run(r.id, r.sourceId, r.startedAt, r.finishedAt, r.tool, r.status, json(r.stats), r.notes ?? null);
+		const sessionStmt = db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.sessions) sessionStmt.run(r.id, r.provider, r.providerSessionId ?? null, r.canonicalKey, r.firstSeenAt ?? null, r.lastSeenAt ?? null, r.startTimestamp ?? null, r.endTimestamp ?? null, null, r.lineCount ?? null, r.byteCount ?? null, r.contentSha256 ?? null, null, json(r.metadata));
+		const obsStmt = db.prepare("INSERT INTO session_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.sessionObservations) obsStmt.run(r.id, r.sessionId, r.sourceId, r.path, r.providerSessionId ?? null, r.observedAt ?? null, r.snapshotLabel ?? null, r.fileBirthtime ?? null, r.fileMtime ?? null, r.fileSize ?? null, r.lineCount ?? null, r.firstEventAt ?? null, r.lastEventAt ?? null, r.contentSha256 ?? null, null, json(r.metadata));
+		const edgeStmt = db.prepare("INSERT INTO edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.edges) edgeStmt.run(r.id, r.sourceSessionId, r.targetSessionId, r.edgeType, r.timestamp ?? null, r.sourceObservationId ?? null, r.targetObservationId ?? null, r.confidence, r.provenance, json(r.metadata));
+		const labelStmt = db.prepare("INSERT INTO labels VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.labels) labelStmt.run(r.id, r.targetType, r.targetId, r.labelType, r.value, null, null, r.confidence, r.sourceId ?? null, r.evidenceId ?? null, json(r.metadata));
+		const aliasStmt = db.prepare("INSERT INTO aliases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.aliases) aliasStmt.run(r.id, r.aliasType, r.fromValue, r.toValue, null, null, r.confidence, r.evidenceId ?? null, r.notes ?? null);
+		const classStmt = db.prepare("INSERT INTO classifications VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.classifications) classStmt.run(r.id, r.targetType, r.targetId, r.classification, r.confidence, r.source, r.evidenceId ?? null, r.notes ?? null, json(r.metadata));
+		const evidenceStmt = db.prepare("INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.evidence) evidenceStmt.run(r.id, r.kind, r.sourceId ?? null, r.targetType ?? null, r.targetId ?? null, r.timestamp ?? null, r.confidence, r.summary, json(r.data));
+		const backupStmt = db.prepare("INSERT INTO backup_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.backupObservations) backupStmt.run(r.id, r.sourceId, r.sessionObservationId ?? null, r.snapshotLabel, r.snapshotTimestamp ?? null, r.path, r.presence, r.fileMtime ?? null, r.fileBirthtime ?? null, r.fileSize ?? null, r.lineCount ?? null, json(r.metadata));
+		const repoStmt = db.prepare("INSERT INTO repositories VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.repositories) repoStmt.run(r.id, r.sourceId, r.path, r.name, r.remoteUrl ?? null, r.vcs, r.firstCommitAt ?? null, r.lastCommitAt ?? null, r.firstCommit ?? null, r.lastCommit ?? null, json(r.metadata));
+		const artifactStmt = db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.artifacts) artifactStmt.run(r.id, r.kind, r.path, r.generatedAt, r.generator, r.inputHash ?? null, json(r.metadata));
+		db.exec("COMMIT");
+	} catch (error) {
+		db.exec("ROLLBACK");
+		throw error;
+	} finally {
+		db.close();
+	}
+}
 
 async function main() {
 	const generatedAt = new Date().toISOString();
@@ -252,7 +313,9 @@ async function main() {
 	const out = JSON.stringify(store, null, 2) + "\n";
 	await writeFile(join(storeDir, "session-store.export.json"), out);
 	await writeFile(join(graphDir, "curated-store.json"), out);
+	replaceSqlite(sqlitePath, store);
 	console.log(`Wrote ${store.sessions.length} sessions, ${store.edges.length} edges, ${store.evidence.length} evidence records to ${join(storeDir, "session-store.export.json")}`);
+	console.log(`Wrote SQLite store to ${sqlitePath}`);
 }
 
 await main();

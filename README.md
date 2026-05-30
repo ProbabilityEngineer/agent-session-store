@@ -27,6 +27,7 @@ Do not mutate raw session JSONLs or `~/.pi/agent/relocations.jsonl`. The store i
 
 ```bash
 npm run build-store
+npm run backup-readiness
 npm run reconstruct
 npm run validate-timeline
 npm run index-segments
@@ -36,12 +37,15 @@ npm run temporal-lineage
 
 These scripts currently read Pi data under `~/.pi/agent/` and write reports under `~/.pi/agent/session-graph/`.
 
-`npm run build-store` writes the current canonical JSON export to:
+`npm run build-store` writes the current canonical store to SQLite plus JSON exports:
 
 ```text
+~/.pi/agent/session-store/session-store.sqlite
 ~/.pi/agent/session-store/session-store.export.json
 ~/.pi/agent/session-graph/curated-store.json
 ```
+
+SQLite is the canonical local database. JSON remains the portable/reviewable export.
 
 ## Relationship to other repos
 
