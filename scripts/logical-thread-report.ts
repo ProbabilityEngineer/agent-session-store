@@ -8,11 +8,12 @@ const storeDir = process.env.AGENT_SESSION_STORE_DIR ?? join(agentDir, "session-
 const graphDir = join(agentDir, "session-graph");
 const storePath = join(storeDir, "session-store.export.json");
 
-type Store = { generatedAt: string; logicalThreads?: Thread[]; threadMembers?: Member[]; threadEdges?: Edge[]; sessions?: Session[] };
+type Store = { generatedAt: string; logicalThreads?: Thread[]; threadMembers?: Member[]; threadEdges?: Edge[]; threadResumeTargets?: ResumeTarget[]; sessions?: Session[] };
 type Thread = { id: string; label?: string; confidence: string; source: string; metadata?: { sessionCount?: number } };
 type Member = { threadId: string; sessionId: string; role: string; ordinal: number };
 type Edge = { threadId: string; relation: string };
 type Session = { id: string; canonicalKey: string; providerSessionId?: string; metadata?: { cwd?: string; displayName?: string } };
+type ResumeTarget = { threadId: string; status: string; recommendedSessionId?: string; activeLeafSessionIds: string[]; recoverableSessionIds: string[]; reasons: string[] };
 
 const store = JSON.parse(await readFile(storePath, "utf8")) as Store;
 const sessions = new Map((store.sessions ?? []).map((session) => [session.id, session]));
@@ -24,6 +25,7 @@ for (const edge of store.threadEdges ?? []) {
 	counts[edge.relation] = (counts[edge.relation] ?? 0) + 1;
 	edgeCounts.set(edge.threadId, counts);
 }
+const resumeByThread = new Map((store.threadResumeTargets ?? []).map((target) => [target.threadId, target]));
 const threads = [...(store.logicalThreads ?? [])].sort((a, b) => (b.metadata?.sessionCount ?? 0) - (a.metadata?.sessionCount ?? 0));
 const report = [
 	"# Logical thread report",
@@ -33,6 +35,7 @@ const report = [
 	`Logical threads: ${threads.length}`,
 	`Thread members: ${(store.threadMembers ?? []).length}`,
 	`Thread edges: ${(store.threadEdges ?? []).length}`,
+	`Resume targets: ${(store.threadResumeTargets ?? []).length}`,
 	"",
 	"## Largest threads",
 	...threads.slice(0, 100).map((thread) => {
@@ -40,7 +43,9 @@ const report = [
 		const first = sessions.get(members[0]?.sessionId ?? "");
 		const last = sessions.get(members.at(-1)?.sessionId ?? "");
 		const counts = edgeCounts.get(thread.id) ?? {};
-		return `- ${thread.label ?? thread.id}: ${members.length} members, edges=${JSON.stringify(counts)}, first=${first?.metadata?.cwd ?? first?.canonicalKey ?? "?"}, last=${last?.metadata?.cwd ?? last?.canonicalKey ?? "?"}`;
+		const resume = resumeByThread.get(thread.id);
+		const recommended = resume?.recommendedSessionId ? sessions.get(resume.recommendedSessionId) : undefined;
+		return `- ${thread.label ?? thread.id}: ${members.length} members, edges=${JSON.stringify(counts)}, resume=${resume?.status ?? "?"}${recommended ? ` -> ${recommended.metadata?.cwd ?? recommended.canonicalKey}` : ""}, first=${first?.metadata?.cwd ?? first?.canonicalKey ?? "?"}, last=${last?.metadata?.cwd ?? last?.canonicalKey ?? "?"}`;
 	}),
 	"",
 	"Note: logical threads are derived metadata. Raw session JSONLs are not merged or rewritten.",

@@ -1,6 +1,6 @@
 ---
 id: ass-logical-resume-targets
-status: open
+status: closed
 deps: [ass-logical-thread-tables, ass-observation-availability]
 links: []
 created: 2026-05-30T04:00:00Z

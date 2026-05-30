@@ -67,6 +67,7 @@ type Store = {
 	logicalThreads: LogicalThread[];
 	threadMembers: ThreadMember[];
 	threadEdges: ThreadEdge[];
+	threadResumeTargets: ThreadResumeTarget[];
 };
 
 type Source = { id: string; provider: string; kind: string; uri: string; label?: string; firstObservedAt?: string; lastObservedAt?: string; metadata?: Json };
@@ -86,6 +87,7 @@ type BatchOperation = { id: string; operationType: string; sourcePath: string; d
 type LogicalThread = { id: string; label?: string; confidence: string; source: string; metadata?: Json };
 type ThreadMember = { id: string; threadId: string; sessionId: string; observationId?: string; role: string; ordinal: number; metadata?: Json };
 type ThreadEdge = { id: string; threadId: string; sourceSessionId: string; targetSessionId: string; relation: string; edgeId?: string; confidence: string; source: string; metadata?: Json };
+type ThreadResumeTarget = { id: string; threadId: string; status: string; recommendedSessionId?: string; recommendedObservationId?: string; activeLeafSessionIds: string[]; recoverableSessionIds: string[]; reasons: string[]; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -238,6 +240,40 @@ function deriveLogicalThreads(store: Store) {
 	}
 }
 
+function deriveResumeTargets(store: Store) {
+	const membersByThread = new Map<string, ThreadMember[]>();
+	for (const member of store.threadMembers) membersByThread.set(member.threadId, [...(membersByThread.get(member.threadId) ?? []), member]);
+	const outgoing = new Map<string, ThreadEdge[]>();
+	for (const edge of store.threadEdges) {
+		if (edge.relation === "context_jump") continue;
+		outgoing.set(edge.sourceSessionId, [...(outgoing.get(edge.sourceSessionId) ?? []), edge]);
+	}
+	const marksByObservation = new Map<string, ObservationMark[]>();
+	for (const mark of store.observationMarks) marksByObservation.set(mark.observationId, [...(marksByObservation.get(mark.observationId) ?? []), mark]);
+	const latest = (ids: string[]) => [...ids].sort((a, b) => {
+		const sa = store.sessions.find((session) => session.id === a);
+		const sb = store.sessions.find((session) => session.id === b);
+		return (sa?.lastSeenAt ?? sa?.startTimestamp ?? "").localeCompare(sb?.lastSeenAt ?? sb?.startTimestamp ?? "");
+	}).at(-1);
+	for (const thread of store.logicalThreads) {
+		const members = membersByThread.get(thread.id) ?? [];
+		const leaves = members.filter((member) => !outgoing.has(member.sessionId));
+		const activeLeaves = leaves.filter((member) => !(member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate")));
+		const recoverable = leaves.filter((member) => member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate"));
+		const activeLeafSessionIds = activeLeaves.map((member) => member.sessionId);
+		const recoverableSessionIds = recoverable.map((member) => member.sessionId);
+		let status: string;
+		const reasons: string[] = [];
+		let recommendedSessionId: string | undefined;
+		if (activeLeafSessionIds.length === 1) { status = "deterministic"; recommendedSessionId = activeLeafSessionIds[0]; reasons.push("one-active-leaf"); }
+		else if (activeLeafSessionIds.length > 1) { status = "branch-choices"; recommendedSessionId = latest(activeLeafSessionIds); reasons.push("multiple-active-leaves", "latest-active-leaf-selected-as-convenience-not-authority"); }
+		else if (recoverableSessionIds.length) { status = "recoverable-only"; recommendedSessionId = latest(recoverableSessionIds); reasons.push("no-active-leaves", "latest-recoverable-leaf"); }
+		else { status = "no-target"; reasons.push("no-leaf-members"); }
+		const recommendedObservationId = members.find((member) => member.sessionId === recommendedSessionId)?.observationId;
+		store.threadResumeTargets.push({ id: id("resume", thread.id), threadId: thread.id, status, recommendedSessionId, recommendedObservationId, activeLeafSessionIds, recoverableSessionIds, reasons, metadata: { leafCount: leaves.length } });
+	}
+}
+
 function initSqlite(db: DatabaseSync) {
 	db.exec(`
 CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, provider TEXT NOT NULL, kind TEXT NOT NULL, uri TEXT NOT NULL, label TEXT, first_observed_at TEXT, last_observed_at TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
@@ -258,6 +294,7 @@ CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type
 CREATE TABLE IF NOT EXISTS logical_threads (id TEXT PRIMARY KEY, label TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_members (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, session_id TEXT NOT NULL, observation_id TEXT, role TEXT NOT NULL, ordinal INTEGER NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_edges (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, source_session_id TEXT NOT NULL, target_session_id TEXT NOT NULL, relation TEXT NOT NULL, edge_id TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS thread_resume_targets (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, status TEXT NOT NULL, recommended_session_id TEXT, recommended_observation_id TEXT, active_leaf_session_ids_json TEXT NOT NULL DEFAULT '[]', recoverable_session_ids_json TEXT NOT NULL DEFAULT '[]', reasons_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -267,7 +304,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 		db.exec("PRAGMA journal_mode = WAL");
 		initSqlite(db);
 		db.exec("BEGIN");
-		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges"]) db.exec(`DELETE FROM ${table}`);
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets"]) db.exec(`DELETE FROM ${table}`);
 		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
 		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -302,6 +339,8 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.threadMembers) memberStmt.run(r.id, r.threadId, r.sessionId, r.observationId ?? null, r.role, r.ordinal, json(r.metadata));
 		const threadEdgeStmt = db.prepare("INSERT INTO thread_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.threadEdges) threadEdgeStmt.run(r.id, r.threadId, r.sourceSessionId, r.targetSessionId, r.relation, r.edgeId ?? null, r.confidence, r.source, json(r.metadata));
+		const resumeStmt = db.prepare("INSERT INTO thread_resume_targets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.threadResumeTargets) resumeStmt.run(r.id, r.threadId, r.status, r.recommendedSessionId ?? null, r.recommendedObservationId ?? null, json(r.activeLeafSessionIds), json(r.recoverableSessionIds), json(r.reasons), json(r.metadata));
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
@@ -319,7 +358,7 @@ async function main() {
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
 	const inventory = await readJson<Json>(inventoryPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
@@ -401,8 +440,9 @@ async function main() {
 	}
 
 	deriveLogicalThreads(store);
+	deriveResumeTargets(store);
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
-	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
+	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";
