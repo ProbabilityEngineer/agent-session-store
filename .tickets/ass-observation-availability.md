@@ -1,6 +1,6 @@
 ---
 id: ass-observation-availability
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-30T04:00:00Z

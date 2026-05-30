@@ -35,6 +35,8 @@ type RelocationRecord = {
 	confidence?: string;
 	sourceSessionId?: string;
 	destinationSessionId?: string;
+	mode?: "move" | "branch";
+	batchId?: string;
 };
 
 type OverlayRecord =
@@ -60,6 +62,8 @@ type Store = {
 	backupObservations: BackupObservation[];
 	repositories: Repository[];
 	artifacts: Artifact[];
+	observationMarks: ObservationMark[];
+	batchOperations: BatchOperation[];
 };
 
 type Source = { id: string; provider: string; kind: string; uri: string; label?: string; firstObservedAt?: string; lastObservedAt?: string; metadata?: Json };
@@ -74,6 +78,8 @@ type Evidence = { id: string; kind: string; sourceId?: string; targetType?: stri
 type BackupObservation = { id: string; sourceId: string; sessionObservationId?: string; snapshotLabel: string; snapshotTimestamp?: string; path: string; presence: "present" | "absent"; fileMtime?: string; fileBirthtime?: string; fileSize?: number; lineCount?: number; metadata?: Json };
 type Repository = { id: string; sourceId: string; path: string; name: string; remoteUrl?: string; vcs: string; firstCommitAt?: string; lastCommitAt?: string; firstCommit?: string; lastCommit?: string; metadata?: Json };
 type Artifact = { id: string; kind: string; path: string; generatedAt: string; generator: string; inputHash?: string; metadata?: Json };
+type ObservationMark = { id: string; observationId: string; markType: string; reason?: string; replacementObservationId?: string; source: string; timestamp: string; confidence: string; manualReviewRequired: boolean; metadata?: Json };
+type BatchOperation = { id: string; operationType: string; sourcePath: string; destinationPath: string; timestamp: string; source: string; status: string; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -181,6 +187,8 @@ CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, kind TEXT NOT NULL, so
 CREATE TABLE IF NOT EXISTS backup_observations (id TEXT PRIMARY KEY, source_id TEXT, session_observation_id TEXT, snapshot_label TEXT NOT NULL, snapshot_timestamp TEXT, path TEXT NOT NULL, presence TEXT NOT NULL, file_mtime TEXT, file_birthtime TEXT, file_size INTEGER, line_count INTEGER, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS repositories (id TEXT PRIMARY KEY, source_id TEXT, path TEXT NOT NULL, name TEXT, remote_url TEXT, vcs TEXT, first_commit_at TEXT, last_commit_at TEXT, first_commit TEXT, last_commit TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS artifacts (id TEXT PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL, generated_at TEXT NOT NULL, generator TEXT NOT NULL, input_hash TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS observation_marks (id TEXT PRIMARY KEY, observation_id TEXT NOT NULL, mark_type TEXT NOT NULL, reason TEXT, replacement_observation_id TEXT, source TEXT NOT NULL, timestamp TEXT NOT NULL, confidence TEXT NOT NULL, manual_review_required INTEGER NOT NULL DEFAULT 1, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS batch_operations (id TEXT PRIMARY KEY, operation_type TEXT NOT NULL, source_path TEXT NOT NULL, destination_path TEXT NOT NULL, timestamp TEXT NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -190,7 +198,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 		db.exec("PRAGMA journal_mode = WAL");
 		initSqlite(db);
 		db.exec("BEGIN");
-		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts"]) db.exec(`DELETE FROM ${table}`);
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "observation_marks", "batch_operations"]) db.exec(`DELETE FROM ${table}`);
 		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
 		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -215,6 +223,10 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.repositories) repoStmt.run(r.id, r.sourceId, r.path, r.name, r.remoteUrl ?? null, r.vcs, r.firstCommitAt ?? null, r.lastCommitAt ?? null, r.firstCommit ?? null, r.lastCommit ?? null, json(r.metadata));
 		const artifactStmt = db.prepare("INSERT INTO artifacts VALUES (?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.artifacts) artifactStmt.run(r.id, r.kind, r.path, r.generatedAt, r.generator, r.inputHash ?? null, json(r.metadata));
+		const markStmt = db.prepare("INSERT INTO observation_marks VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.observationMarks) markStmt.run(r.id, r.observationId, r.markType, r.reason ?? null, r.replacementObservationId ?? null, r.source, r.timestamp, r.confidence, r.manualReviewRequired ? 1 : 0, json(r.metadata));
+		const batchStmt = db.prepare("INSERT INTO batch_operations VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.batchOperations) batchStmt.run(r.id, r.operationType, r.sourcePath, r.destinationPath, r.timestamp, r.source, r.status, json(r.metadata));
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
@@ -232,8 +244,8 @@ async function main() {
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
 	const inventory = await readJson<Json>(inventoryPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [] };
-	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>() };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], observationMarks: [], batchOperations: [] };
+	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
 	const manifestSource = addSource("pi", "relocation_manifest", manifestPath, "Pi relocation manifest");
@@ -267,7 +279,14 @@ async function main() {
 		const target = sessionByPath.get(record.destinationSession);
 		if (!source || !target) return;
 		const edgeId = id("edge", "manifest", String(index), record.ts, record.sourceSession, record.destinationSession);
-		pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType: "relocation", timestamp: record.ts, sourceObservationId: obsByPath.get(record.sourceSession)?.id, targetObservationId: obsByPath.get(record.destinationSession)?.id, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", provenance: "pi-relocate-manifest", metadata: { manifestIndex: index, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId } });
+		const sourceObservationId = obsByPath.get(record.sourceSession)?.id;
+		const targetObservationId = obsByPath.get(record.destinationSession)?.id;
+		pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType: record.mode === "branch" ? "branch" : "relocation", timestamp: record.ts, sourceObservationId, targetObservationId, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", provenance: "pi-relocate-manifest", metadata: { manifestIndex: index, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode: record.mode ?? "move", batchId: record.batchId } });
+		if (record.batchId) pushUnique(store.batchOperations, seen.batches, { id: record.batchId, operationType: "bucket_relocation", sourcePath: record.fromCwd, destinationPath: record.toCwd, timestamp: record.ts, source: "pi-relocate", status: "applied", metadata: { mode: record.mode ?? "move" } });
+		if ((record.mode ?? "move") === "move" && sourceObservationId && targetObservationId) {
+			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "superseded", targetObservationId, record.ts), observationId: sourceObservationId, markType: "superseded", reason: "relocated by pi-relocate move semantics", replacementObservationId: targetObservationId, source: "pi-relocate-manifest", timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId } });
+			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "deletion_candidate", targetObservationId, record.ts), observationId: sourceObservationId, markType: "deletion_candidate", reason: "old copy after relocation; requires manual review before deletion", replacementObservationId: targetObservationId, source: "pi-relocate-manifest", timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId } });
+		}
 		for (const [type, value, targetId] of [["cwd", record.fromCwd, source.id], ["cwd", record.toCwd, target.id]] as const) if (value && !value.startsWith("(")) pushUnique(store.labels, seen.labels, { id: id("label", edgeId, type, targetId, value), targetType: "session", targetId, labelType: type, value, confidence: "authoritative", sourceId: manifestSource });
 	});
 
@@ -307,7 +326,7 @@ async function main() {
 	}
 
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
-	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
+	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "observationMarks", "batchOperations"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";
