@@ -505,12 +505,22 @@ function temporalTimelineJson(report: Awaited<ReturnType<typeof build>>, options
 function focusedMermaid(report: Awaited<ReturnType<typeof build>>, options: { includeUnresolved?: boolean } = {}) {
 	const lines = ["flowchart LR"];
 	const sessionIds = new Map<string, string>();
+	const firstEdgeBySession = new Map<string, string>();
+	for (const edge of visibleEdges(report, options)) {
+		for (const path of [edge.sourceSession, edge.destinationSession]) {
+			const existing = firstEdgeBySession.get(path);
+			if (!existing || edge.ts < existing) firstEdgeBySession.set(path, edge.ts);
+		}
+	}
 	function sessionNode(path: string, cwd: string | undefined, currentLines: number | undefined) {
 		const existing = sessionIds.get(path);
 		if (existing) return existing;
 		const id = `n_${shortHash(path)}`;
 		sessionIds.set(path, id);
-		lines.push(`  ${id}["${labelFor(report, path, cwd)}<br/>session<br/>current lines: ${currentLines ?? "?"}"]`);
+		const stats = report.sessionStats[path];
+		const dates = [stats?.startTimestamp?.slice(0, 10), firstEdgeBySession.get(path)?.slice(0, 10), stats?.lastTimestamp?.slice(0, 10)].filter(Boolean);
+		const dateLabel = dates.length ? `<br/>dates: ${[...new Set(dates)].join(" → ")}` : "";
+		lines.push(`  ${id}["${labelFor(report, path, cwd)}<br/>session${dateLabel}<br/>current lines: ${currentLines ?? "?"}"]`);
 		return id;
 	}
 	const edges = visibleEdges(report, options);
@@ -570,7 +580,7 @@ document.getElementById('reset')?.addEventListener('click', () => { window.panZo
 <body>
 <h1>Focused temporal lineage</h1>
 <p>Generated: ${report.generatedAt}</p>
-<div class="legend"><p>Focused view: relocation/overlay progression only. This intentionally omits standalone session starts and uses the compact Mermaid graph structure from the early snapshot.</p></div>
+<div class="legend"><p>Focused view: relocation/overlay progression only. This intentionally omits standalone session starts and uses the compact Mermaid graph structure from the early snapshot.</p><ul><li><strong>Blue boxes</strong>: session files/topology nodes. They now include known start/edge/last dates plus current line counts.</li><li><strong>Yellow diamonds</strong>: source-session state at a relocation timestamp.</li><li><strong>Dotted arrows</strong>: progression within the same append-only session file.</li><li><strong>Solid arrows</strong>: relocation/fork edges to destination sessions.</li></ul></div>
 <div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div>
 <div class="mermaid">${mmd}</div>
 </body>
