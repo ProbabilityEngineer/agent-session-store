@@ -19,6 +19,7 @@ const preManifestPath = join(graphDir, "pre-manifest-lineage.json");
 const prefixLineagePath = join(graphDir, "prefix-lineage.json");
 const inventoryPath = join(graphDir, "temporal-inventory.json");
 const bucketReconciliationPath = join(storeDir, "session-bucket-reconciliation.json");
+const repoIdentitySidecarPath = join(storeDir, "repo-identities.jsonl");
 const checkpointCandidatePaths = [
 	join(storeDir, "store-verification.md"),
 	join(storeDir, "backup-readiness.md"),
@@ -77,6 +78,9 @@ type Store = {
 	threadEdges: ThreadEdge[];
 	threadResumeTargets: ThreadResumeTarget[];
 	bucketStatuses: BucketStatus[];
+	repoIdentities: RepoIdentity[];
+	repoObservations: RepoObservation[];
+	repoEvents: RepoEvent[];
 };
 
 type Source = { id: string; provider: string; kind: string; uri: string; label?: string; firstObservedAt?: string; lastObservedAt?: string; metadata?: Json };
@@ -99,6 +103,10 @@ type ThreadMember = { id: string; threadId: string; sessionId: string; observati
 type ThreadEdge = { id: string; threadId: string; sourceSessionId: string; targetSessionId: string; relation: string; edgeId?: string; confidence: string; source: string; metadata?: Json };
 type ThreadResumeTarget = { id: string; threadId: string; status: string; recommendedSessionId?: string; recommendedObservationId?: string; activeLeafSessionIds: string[]; recoverableSessionIds: string[]; reasons: string[]; metadata?: Json };
 type BucketStatus = { id: string; root: string; bucket: string; decodedPath?: string; status: string; confidence: string; sessionCount: number; earliest?: string; latest?: string; reasons: string[]; metadata?: Json };
+type RepoIdentity = { id: string; stableName: string; displayName?: string; description?: string; confidence: string; source: string; metadata?: Json };
+type RepoObservation = { id: string; repoIdentityId: string; path?: string; bucket?: string; remoteUrl?: string; validFrom?: string; validTo?: string; confidence: string; source: string; evidenceId?: string; metadata?: Json };
+type RepoEvent = { id: string; eventType: "rename" | "move" | "swap" | "fork" | "archive" | "superseded_by" | "alias" | string; repoIdentityId?: string; relatedRepoIdentityId?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence: string; source: string; evidenceId?: string; manualReviewRequired: boolean; summary?: string; metadata?: Json };
+type RepoIdentitySidecar = { kind: "repo-identity"; id?: string; stableName: string; displayName?: string; description?: string; confidence?: string; metadata?: Json } | { kind: "repo-observation"; repoIdentityId?: string; stableName?: string; path?: string; bucket?: string; remoteUrl?: string; validFrom?: string; validTo?: string; confidence?: string; evidence?: string; metadata?: Json } | { kind: "repo-event"; eventType: string; repoIdentityId?: string; stableName?: string; relatedRepoIdentityId?: string; relatedStableName?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence?: string; summary?: string; evidence?: string; manualReviewRequired?: boolean; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -308,6 +316,9 @@ CREATE TABLE IF NOT EXISTS thread_members (id TEXT PRIMARY KEY, thread_id TEXT N
 CREATE TABLE IF NOT EXISTS thread_edges (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, source_session_id TEXT NOT NULL, target_session_id TEXT NOT NULL, relation TEXT NOT NULL, edge_id TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS thread_resume_targets (id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, status TEXT NOT NULL, recommended_session_id TEXT, recommended_observation_id TEXT, active_leaf_session_ids_json TEXT NOT NULL DEFAULT '[]', recoverable_session_ids_json TEXT NOT NULL DEFAULT '[]', reasons_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS bucket_statuses (id TEXT PRIMARY KEY, root TEXT NOT NULL, bucket TEXT NOT NULL, decoded_path TEXT, status TEXT NOT NULL, confidence TEXT NOT NULL, session_count INTEGER NOT NULL, earliest TEXT, latest TEXT, reasons_json TEXT NOT NULL DEFAULT '[]', metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS repo_identities (id TEXT PRIMARY KEY, stable_name TEXT NOT NULL, display_name TEXT, description TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS repo_observations (id TEXT PRIMARY KEY, repo_identity_id TEXT NOT NULL, path TEXT, bucket TEXT, remote_url TEXT, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS repo_events (id TEXT PRIMARY KEY, event_type TEXT NOT NULL, repo_identity_id TEXT, related_repo_identity_id TEXT, from_path TEXT, to_path TEXT, timestamp TEXT, confidence TEXT NOT NULL, source TEXT NOT NULL, evidence_id TEXT, manual_review_required INTEGER NOT NULL DEFAULT 1, summary TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 `);
 }
 
@@ -317,7 +328,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 		db.exec("PRAGMA journal_mode = WAL");
 		initSqlite(db);
 		db.exec("BEGIN");
-		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "checkpoint_artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets", "bucket_statuses"]) db.exec(`DELETE FROM ${table}`);
+		for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "checkpoint_artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets", "bucket_statuses", "repo_identities", "repo_observations", "repo_events"]) db.exec(`DELETE FROM ${table}`);
 		const sourceStmt = db.prepare("INSERT INTO sources VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.sources) sourceStmt.run(r.id, r.provider, r.kind, r.uri, r.label ?? null, r.firstObservedAt ?? null, r.lastObservedAt ?? null, json(r.metadata));
 		const runStmt = db.prepare("INSERT INTO import_runs VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
@@ -358,6 +369,12 @@ function replaceSqlite(dbPath: string, store: Store) {
 		for (const r of store.threadResumeTargets) resumeStmt.run(r.id, r.threadId, r.status, r.recommendedSessionId ?? null, r.recommendedObservationId ?? null, json(r.activeLeafSessionIds), json(r.recoverableSessionIds), json(r.reasons), json(r.metadata));
 		const bucketStatusStmt = db.prepare("INSERT INTO bucket_statuses VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
 		for (const r of store.bucketStatuses) bucketStatusStmt.run(r.id, r.root, r.bucket, r.decodedPath ?? null, r.status, r.confidence, r.sessionCount, r.earliest ?? null, r.latest ?? null, json(r.reasons), json(r.metadata));
+		const repoIdentityStmt = db.prepare("INSERT INTO repo_identities VALUES (?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.repoIdentities) repoIdentityStmt.run(r.id, r.stableName, r.displayName ?? null, r.description ?? null, r.confidence, r.source, json(r.metadata));
+		const repoObsStmt = db.prepare("INSERT INTO repo_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.repoObservations) repoObsStmt.run(r.id, r.repoIdentityId, r.path ?? null, r.bucket ?? null, r.remoteUrl ?? null, r.validFrom ?? null, r.validTo ?? null, r.confidence, r.source, r.evidenceId ?? null, json(r.metadata));
+		const repoEventStmt = db.prepare("INSERT INTO repo_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+		for (const r of store.repoEvents) repoEventStmt.run(r.id, r.eventType, r.repoIdentityId ?? null, r.relatedRepoIdentityId ?? null, r.fromPath ?? null, r.toPath ?? null, r.timestamp ?? null, r.confidence, r.source, r.evidenceId ?? null, r.manualReviewRequired ? 1 : 0, r.summary ?? null, json(r.metadata));
 		db.exec("COMMIT");
 	} catch (error) {
 		db.exec("ROLLBACK");
@@ -375,9 +392,10 @@ async function main() {
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
 	const inventory = await readJson<Json>(inventoryPath);
 	const bucketReconciliation = await readJson<{ buckets?: (Json & { root?: string; bucket?: string; decodedPath?: string; status?: string; confidence?: string; sessionCount?: number; earliest?: string; latest?: string; reasons?: string[] })[] }>(bucketReconciliationPath);
+	const repoIdentitySidecar = await readJsonl<RepoIdentitySidecar>(repoIdentitySidecarPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [] };
-	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>() };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
+	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>(), repoIdentities: new Set<string>(), repoObservations: new Set<string>(), repoEvents: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
 	const manifestSource = addSource("pi", "relocation_manifest", manifestPath, "Pi relocation manifest");
@@ -386,6 +404,7 @@ async function main() {
 	const prefixSource = addSource("manual-curation", "curated_report", prefixLineagePath, "Prefix lineage report");
 	const oldRepoSource = addSource("git-repository", "repository_collection", oldExtensionsDir, "Old extension repositories");
 	const bucketReconciliationSource = addSource("manual-curation", "bucket_reconciliation", bucketReconciliationPath, "Session bucket reconciliation");
+	const repoIdentitySource = addSource("manual-curation", "repo_identity_sidecar", repoIdentitySidecarPath, "Repo identity sidecar");
 	store.importRuns.push({ id: id("run", generatedAt, "build-curated-store"), sourceId: liveSource, startedAt: generatedAt, finishedAt: generatedAt, tool: "scripts/build-curated-store.ts", status: "ok", stats: { manifestRecords: manifest.length, overlayRecords: overlays.length } });
 
 	const paths = new Set<string>(await listSessionFiles());
@@ -474,10 +493,28 @@ async function main() {
 		if (info) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "git", repoPath), kind: "git_activity", sourceId: oldRepoSource, timestamp: info.lastAt, confidence: "high", summary: `${relative(oldExtensionsDir, repoPath)} activity ${info.firstAt} to ${info.lastAt}`, data: { path: repoPath, firstCommit: info.firstHash, firstSubject: info.firstSubject, lastCommit: info.lastHash, lastSubject: info.lastSubject, remote: info.remote } });
 	}
 
+	const repoIdentityId = (stableName?: string, explicit?: string) => explicit ?? (stableName ? id("repo_identity", stableName) : undefined);
+	for (const record of repoIdentitySidecar) {
+		if (record.kind !== "repo-identity") continue;
+		pushUnique(store.repoIdentities, seen.repoIdentities, { id: repoIdentityId(record.stableName, record.id)!, stableName: record.stableName, displayName: record.displayName, description: record.description, confidence: record.confidence ?? "manual", source: "repo-identities.jsonl", metadata: record.metadata });
+	}
+	for (const record of repoIdentitySidecar) {
+		if (record.kind === "repo-observation") {
+			const rid = repoIdentityId(record.stableName, record.repoIdentityId);
+			if (!rid) continue;
+			pushUnique(store.repoObservations, seen.repoObservations, { id: id("repo_obs", rid, record.path, record.bucket, record.remoteUrl, record.validFrom, record.validTo), repoIdentityId: rid, path: record.path, bucket: record.bucket, remoteUrl: record.remoteUrl, validFrom: record.validFrom, validTo: record.validTo, confidence: record.confidence ?? "manual", source: "repo-identities.jsonl", metadata: { evidence: record.evidence, ...record.metadata } });
+		} else if (record.kind === "repo-event") {
+			const rid = repoIdentityId(record.stableName, record.repoIdentityId);
+			const related = repoIdentityId(record.relatedStableName, record.relatedRepoIdentityId);
+			pushUnique(store.repoEvents, seen.repoEvents, { id: id("repo_event", record.eventType, rid, related, record.fromPath, record.toPath, record.timestamp, record.summary), eventType: record.eventType, repoIdentityId: rid, relatedRepoIdentityId: related, fromPath: record.fromPath, toPath: record.toPath, timestamp: record.timestamp, confidence: record.confidence ?? "manual", source: "repo-identities.jsonl", manualReviewRequired: record.manualReviewRequired ?? true, summary: record.summary, metadata: { evidence: record.evidence, ...record.metadata } });
+		}
+	}
+	if (repoIdentitySidecar.length) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", repoIdentitySidecarPath), kind: "repo_identity_sidecar", path: repoIdentitySidecarPath, generatedAt, generator: "manual-curated-sidecar", metadata: { imported: true, recordCount: repoIdentitySidecar.length } });
+
 	deriveLogicalThreads(store);
 	deriveResumeTargets(store);
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
-	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
+	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses", "repoIdentities", "repoObservations", "repoEvents"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";

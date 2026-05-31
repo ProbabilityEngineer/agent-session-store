@@ -49,6 +49,32 @@ Raw inputs are never rewritten:
 
 The store records normalized facts, hashes, observations, and evidence pointers with provenance.
 
+## Repository identity model
+
+Repository/project identity is distinct from paths, cwd buckets, display names, and git remotes. Paths are observations over time; a repo identity is the stable logical project used for time-use and relationship reports.
+
+New normalized records:
+
+- `repo_identities`: stable logical project names, descriptions, confidence, provenance.
+- `repo_observations`: path/bucket/remote observations attached to a repo identity over optional valid time ranges.
+- `repo_events`: curated relationships such as `rename`, `move`, `swap`, `fork`, `archive`, `superseded_by`, and `alias`.
+
+Curated input lives at:
+
+```text
+~/.pi/agent/session-store/repo-identities.jsonl
+```
+
+Example records:
+
+```jsonl
+{"kind":"repo-identity","stableName":"bespoke-thinking-main-site","displayName":"Bespoke Thinking website","confidence":"manual"}
+{"kind":"repo-observation","stableName":"bespoke-thinking-main-site","path":"/Users/sam/git/.../bespoke-thinking-website","confidence":"manual","metadata":{"note":"path identity may have changed later"}}
+{"kind":"repo-event","eventType":"swap","stableName":"bespoke-thinking-main-site","fromPath":"bespoke-thinking-website","toPath":"bespoke-thinking-website-02","confidence":"manual","manualReviewRequired":true,"summary":"Possible website folder role swap; verify before using as lineage truth"}
+```
+
+Raw manifests and session JSONLs are not rewritten. Repo events are curated/evidence-backed interpretation layers.
+
 ## Provider and source model
 
 A provider is the originating agent/runtime format. A source is a concrete input location or import target.

@@ -1,6 +1,6 @@
 # agent-session-store
 
-Canonical store and import/reconstruction tooling for agent session lineage.
+Canonical store and import/reconstruction tooling for agent session lineage, repository identity, evidence curation, and graph/report exports.
 
 Repository shorthand:
 
@@ -8,50 +8,76 @@ Repository shorthand:
 git:github.com/ProbabilityEngineer/agent-session-store
 ```
 
-This repo uses colocated `jj` + Git for version control.
+## Principles
 
-This repo is split out from `pi-session-graph` so the graph extension can stay lightweight. It owns heavier private/dev work:
+- Do not mutate raw Pi session JSONLs.
+- Do not rewrite `~/.pi/agent/relocations.jsonl`.
+- Store metadata, hashes, timestamps, labels, counts, and evidence by default, not raw transcript content.
+- Treat cwd/path/bucket as observations, not durable project identity.
 
-- canonical lineage store design and migration
-- backup/session metadata extraction
-- reconstruction and validation scripts
-- import adapters for Pi, oh-my-pi, Codex, Claude, OpenCode, Factory, and other agent session formats
-- curated evidence, classifications, aliases, and labels
-- privacy-preserving JSON/HTML reports
-
-## Raw inputs stay immutable
-
-Do not mutate raw session JSONLs or `~/.pi/agent/relocations.jsonl`. The store is a normalized projection with provenance and can be rebuilt from raw inputs and curated sidecars.
-
-## Current scripts
+## Main scripts
 
 ```bash
-npm run build-store
-npm run backup-readiness
-npm run reconstruct
-npm run validate-timeline
-npm run index-segments
-npm run prefix-lineage
-npm run temporal-lineage
+npm run build-store          # build SQLite + JSON exports
+npm run export-graph         # graph-ready JSON for pi-session-graph
+npm run repo-identities      # markdown report for repo identities/events
+npm run backup-readiness     # backup extraction readiness report
+npm run inventory-buckets    # session bucket inventory/reconciliation
+npm run logical-threads      # logical thread/resume target report
+npm run reconstruct          # local history reconstruction
+npm run validate-timeline    # timeline validation
+npm run index-segments       # metadata-only session segment index
+npm run prefix-lineage       # prefix/common-prefix lineage reconstruction
+npm run temporal-lineage     # temporal Mermaid lineage graph
+npm run lint                 # TypeScript check
 ```
 
-These scripts currently read Pi data under `~/.pi/agent/` and write reports under `~/.pi/agent/session-graph/`.
-
-`npm run build-store` writes the current canonical store to SQLite plus JSON exports:
+## Generated artifacts
 
 ```text
 ~/.pi/agent/session-store/session-store.sqlite
 ~/.pi/agent/session-store/session-store.export.json
+~/.pi/agent/session-store/graph-export.json
+~/.pi/agent/session-store/repo-identities.md
+~/.pi/agent/session-store/session-bucket-reconciliation.json
+~/.pi/agent/session-store/session-bucket-reconciliation.md
+~/.pi/agent/session-store/logical-threads.md
 ~/.pi/agent/session-graph/curated-store.json
 ```
 
-SQLite is the canonical local database. JSON remains the portable/reviewable export.
+SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
+
+## Repo identity
+
+Repo/project identity is modeled separately from cwd/path/bucket so renamed, swapped, moved, forked, or archived repos can be interpreted over time.
+
+Curated sidecar:
+
+```text
+~/.pi/agent/session-store/repo-identities.jsonl
+```
+
+Supported record kinds:
+
+```jsonl
+{"kind":"repo-identity","stableName":"bespoke-thinking-main-site","displayName":"Bespoke Thinking website","confidence":"manual"}
+{"kind":"repo-observation","stableName":"bespoke-thinking-main-site","path":"/path/to/bespoke-thinking-website","validFrom":"2026-05-01T00:00:00Z","confidence":"manual"}
+{"kind":"repo-event","eventType":"swap","stableName":"bespoke-thinking-main-site","fromPath":"bespoke-thinking-website","toPath":"bespoke-thinking-website-02","confidence":"manual","manualReviewRequired":true}
+```
+
+The store imports these into:
+
+- `repo_identities`
+- `repo_observations`
+- `repo_events`
+
+Events are interpretation/evidence layers; raw sessions and relocation manifests remain unchanged.
 
 ## Relationship to other repos
 
-- `pi-session-graph`: lightweight Pi extension/viewer over prepared graph/store data.
-- `pi-relocate`: relocation producer; keeps raw manifest and may later append normalized store events.
-- `agent-session-store`: canonical store, imports, reconstruction, and curation.
+- `pi-relocate`: producer of relocation/session observations and prune/replay helpers.
+- `agent-session-store`: canonical store, imports, reconstruction, repo identity, reports.
+- `pi-session-graph`: lightweight viewer over prepared JSON exports.
 
 ## Development
 

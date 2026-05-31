@@ -1,6 +1,6 @@
 ---
 id: ass-repo-identity-model
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T05:30:00Z
