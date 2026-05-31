@@ -604,16 +604,19 @@ function temporalTimelineHtml(report: Awaited<ReturnType<typeof build>>, options
 	const ticks = Array.from({ length: tickCount + 1 }, (_, index) => data.minTime + (span * index) / tickCount);
 	const svg: string[] = [];
 	svg.push(`<svg id="timeline-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}">`);
-	svg.push(`<style>.row{font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#374151}.tick{font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#6b7280}.grid{stroke:#e5e7eb;stroke-width:1}.start{fill:#818cf8;stroke:#4f46e5}.event{fill:#fbbf24;stroke:#d97706}.edge{stroke:#16a34a;stroke-width:1.5;fill:none;opacity:.75}.life{stroke:#93c5fd;stroke-width:2;opacity:.55}.tip{font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#111827}</style>`);
+	svg.push(`<style>.row{font:12px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#374151}.tick{font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#6b7280}.grid{stroke:#e5e7eb;stroke-width:1}.row-boundary{stroke:#d1d5db;stroke-width:1}.start{fill:#818cf8;stroke:#4f46e5}.event{fill:#fbbf24;stroke:#d97706}.edge{stroke:#16a34a;stroke-width:1.5;fill:none;opacity:.75}.life{stroke:#93c5fd;stroke-width:2;opacity:.55}.tip{font:11px -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;fill:#111827}</style>`);
 	for (const tick of ticks) {
 		const tx = left + ((tick - data.minTime) / span) * (width - left - right);
 		svg.push(`<line class="grid" x1="${tx.toFixed(1)}" y1="25" x2="${tx.toFixed(1)}" y2="${height - 40}"/>`);
 		svg.push(`<text class="tick" x="${tx.toFixed(1)}" y="${height - 18}" text-anchor="middle">${new Date(tick).toISOString().slice(0, 10)}</text>`);
 	}
+	for (let index = 0; index <= data.rows.length; index++) {
+		const y = top - rowHeight / 2 + index * rowHeight;
+		svg.push(`<line class="row-boundary" x1="0" y1="${y}" x2="${width - right}" y2="${y}"/>`);
+	}
 	for (const row of data.rows) {
 		const y = rowY.get(row.path)!;
 		svg.push(`<text class="row" x="10" y="${y + 4}">${escapeHtml(row.label)}</text>`);
-		svg.push(`<line class="grid" x1="${left}" y1="${y}" x2="${width - right}" y2="${y}"/>`);
 	}
 	for (const row of data.rows) {
 		const rowStarts = data.starts.filter((start) => rowFor(start.path) === row.path);
@@ -646,7 +649,7 @@ function temporalTimelineHtml(report: Awaited<ReturnType<typeof build>>, options
 <html><head><meta charset="utf-8"><title>Temporal session timeline</title>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.4}.legend,.controls{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin:1rem 0}.controls{position:sticky;top:0;z-index:10}button{margin-right:.5rem;padding:.35rem .7rem;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer}#wrap{height:82vh;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden}svg{width:100%;height:100%}code{background:#f3f4f6;padding:.1rem .25rem;border-radius:4px}</style>
-</head><body><h1>Temporal session timeline (${options.groupBy ?? "project"} rows)</h1><p>Generated: ${report.generatedAt}</p><div class="legend"><ul><li>x-axis is real time, linearly scaled.</li><li>Rows are ${options.groupBy === "session" ? "individual session files" : "project/folder labels"}.</li><li>Blue horizontal bars show active span from first start to last observed event on that row; dark-blue dots mark last used.</li><li>Purple dots are session starts.</li><li>Yellow dots are relocation events on the source row.</li><li>Green curves connect relocation events to destination rows at the same timestamp.</li><li>Hover points/curves for details. No transcript content is included.</li></ul></div><div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div><div id="wrap">${svg.join("\n")}</div><script>const svg=document.getElementById('timeline-svg'); window.panZoom=svgPanZoom(svg,{controlIconsEnabled:true,fit:true,center:true,minZoom:0.05,maxZoom:100,zoomScaleSensitivity:.25}); document.getElementById('zoom-in').onclick=()=>panZoom.zoomIn(); document.getElementById('zoom-out').onclick=()=>panZoom.zoomOut(); document.getElementById('reset').onclick=()=>{panZoom.resetZoom();panZoom.center();panZoom.fit();};</script></body></html>\n`;
+</head><body><h1>Temporal session timeline (${options.groupBy ?? "project"} rows)</h1><p>Generated: ${report.generatedAt}</p><div class="legend"><ul><li>x-axis is real time, linearly scaled.</li><li>Rows are ${options.groupBy === "session" ? "individual session files" : "project/folder labels"}, delimited by horizontal top/bottom boundary lines.</li><li>Blue horizontal bars show active span from first start to last observed event on that row; dark-blue dots mark last used.</li><li>Purple dots are session starts.</li><li>Yellow dots are relocation events on the source row.</li><li>Green curves connect relocation events to destination rows at the same timestamp.</li><li>Hover points/curves for details. No transcript content is included.</li></ul></div><div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div><div id="wrap">${svg.join("\n")}</div><script>const svg=document.getElementById('timeline-svg'); window.panZoom=svgPanZoom(svg,{controlIconsEnabled:true,fit:true,center:true,minZoom:0.05,maxZoom:100,zoomScaleSensitivity:.25}); document.getElementById('zoom-in').onclick=()=>panZoom.zoomIn(); document.getElementById('zoom-out').onclick=()=>panZoom.zoomOut(); document.getElementById('reset').onclick=()=>{panZoom.resetZoom();panZoom.center();panZoom.fit();};</script></body></html>\n`;
 }
 
 function markdown(report: Awaited<ReturnType<typeof build>>, mmd: string) {
