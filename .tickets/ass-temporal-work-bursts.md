@@ -1,6 +1,6 @@
 ---
 id: ass-temporal-work-bursts
-status: open
+status: closed
 deps: [ass-repo-identity-continuity]
 links: []
 created: 2026-05-31T16:00:00Z

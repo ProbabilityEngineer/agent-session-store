@@ -1,6 +1,6 @@
 ---
 id: ass-repo-identity-continuity
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T16:00:00Z

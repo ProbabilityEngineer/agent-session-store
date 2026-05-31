@@ -364,6 +364,48 @@ function deriveCrossProviderContinuity(store: Store, seen: Seen) {
 	}
 }
 
+function words(value: unknown): string[] {
+	if (typeof value !== "string") return [];
+	return [...new Set(value.toLowerCase().replace(/[^a-z0-9]+/g, " ").split(/\s+/).filter((w) => w.length > 3 && !["session", "work", "test", "with", "from", "that", "this", "have", "your"].includes(w)))].slice(0, 8);
+}
+
+function deriveAdditionalMetadata(store: Store, seen: Seen, generatedAt: string) {
+	const repoByPath = [...store.repoObservations].filter((obs) => obs.path).sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0));
+	const repoFor = (cwd?: string) => cwd ? repoByPath.find((obs) => obs.path && (cwd === obs.path || cwd.startsWith(`${obs.path}/`))) : undefined;
+	const byRepo = new Map<string, Session[]>();
+	for (const session of store.sessions) {
+		const metadata = session.metadata ??= {};
+		const cwd = typeof metadata.cwd === "string" ? metadata.cwd : undefined;
+		const repo = repoFor(cwd);
+		if (repo) { metadata.repoIdentityId = repo.repoIdentityId; const list = byRepo.get(repo.repoIdentityId) ?? []; list.push(session); byRepo.set(repo.repoIdentityId, list); }
+		const eventCounts = asObj(metadata.eventCounts) ?? {};
+		const toolCounts = Object.fromEntries(Object.entries(eventCounts).filter(([k]) => /tool|command|exec|edit|write|read|patch/i.test(k)));
+		if (Object.keys(toolCounts).length) metadata.activitySummary = { toolCounts, eventCounts };
+		const kws = words(metadata.displayName);
+		if (kws.length) pushUnique(store.labels, seen.labels, { id: id("label", "keywords", session.id, kws.join("-")), targetType: "session", targetId: session.id, labelType: "keywords", value: kws.join(", "), confidence: "derived", sourceId: undefined, metadata: { source: "title-only" } });
+		const observation = store.sessionObservations.find((obs) => obs.sessionId === session.id);
+		if (observation && (/\.Trash\//.test(observation.path) || /trash|restored|recovered/i.test(JSON.stringify(observation.metadata ?? {})))) pushUnique(store.observationMarks, seen.marks, { id: id("mark", "restored", observation.id), observationId: observation.id, markType: "restored_or_recovered", reason: "path-or-metadata-indicates-restored-session", source: "derived-restored-provenance", timestamp: generatedAt, confidence: "low", manualReviewRequired: true });
+	}
+	for (const [repoIdentityId, group] of byRepo) {
+		const providers = new Set(group.map((s) => s.provider));
+		if (providers.size < 2) continue;
+		group.sort((a, b) => sessionTime(a).localeCompare(sessionTime(b)) || a.id.localeCompare(b.id));
+		for (let i = 1; i < group.length; i++) {
+			const source = group[i - 1]!; const target = group[i]!;
+			if (source.provider === target.provider) continue;
+			pushUnique(store.edges, seen.edges, { id: id("edge", "repo-identity", repoIdentityId, source.id, target.id), sourceSessionId: source.id, targetSessionId: target.id, edgeType: "same_repo_identity_temporal", timestamp: target.startTimestamp ?? target.firstSeenAt, confidence: "medium", provenance: "derived-repo-identity-time", metadata: { repoIdentityId, sourceProvider: source.provider, targetProvider: target.provider } });
+		}
+		for (let i = 0; i < group.length; i += 12) {
+			const burst = group.slice(i, i + 12); const start = burst[0]; const end = burst[burst.length - 1];
+			pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "work-burst", repoIdentityId, start?.id, end?.id), kind: "temporal_work_burst", path: `derived:${repoIdentityId}:${i}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { repoIdentityId, sessionIds: burst.map((s) => s.id), providers: [...new Set(burst.map((s) => s.provider))], start: start?.startTimestamp ?? start?.firstSeenAt, end: end?.endTimestamp ?? end?.lastSeenAt, sessionCount: burst.length } });
+		}
+	}
+	for (const artifact of store.artifacts.filter((a) => a.kind.startsWith("manual_session_"))) {
+		const ids = Array.isArray(artifact.metadata?.matchedProviderSessionIds) ? artifact.metadata.matchedProviderSessionIds : [];
+		for (const providerSessionId of ids) for (const session of store.sessions.filter((s) => s.providerSessionId === providerSessionId)) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "manual-export-link", artifact.id, session.id), kind: "manual_export_session_link", targetType: "session", targetId: session.id, confidence: "high", summary: `Manual export ${basename(artifact.path)} links to ${session.provider}:${providerSessionId}`, data: { artifactId: artifact.id, artifactPath: artifact.path, providerSessionId } });
+	}
+}
+
 function deriveLogicalThreads(store: Store) {
 	const ds = new DisjointSet();
 	for (const session of store.sessions) ds.find(session.id);
@@ -666,6 +708,7 @@ async function main() {
 
 	await addExternalProviderSessions(store, seen, addSource);
 	deriveCrossProviderContinuity(store, seen);
+	deriveAdditionalMetadata(store, seen, generatedAt);
 
 	deriveLogicalThreads(store);
 	deriveResumeTargets(store);
