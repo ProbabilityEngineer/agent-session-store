@@ -26,3 +26,7 @@ Document and execute gradual naming alignment for related Pi session tools.
 - Preserve old package names with compatibility docs/redirects.
 - Update READMEs and install docs.
 - Avoid breaking existing Pi settings abruptly.
+
+## Boundary note
+
+`agent-session-store` remains the provider-neutral core. `pi-session-store` should be the Pi-facing wrapper. `pi-session-graph` should render prepared exports. `pi-session-relocate` records session relocation/fork facts; `pi-session-repo-move` handles filesystem repo moves.

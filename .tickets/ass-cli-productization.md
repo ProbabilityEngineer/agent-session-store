@@ -20,3 +20,7 @@ Turn the canonical store tooling into a usable provider-neutral CLI for indexing
 - Use config/env for source roots instead of hardcoded personal paths.
 - Package metadata supports local/global install.
 - README includes quickstart and examples.
+
+## Boundary note
+
+The CLI should own canonical data preparation/export commands. Visualization commands may live in `pi-session-graph`; this package should expose graph-ready data contracts rather than HTML/SVG rendering.
