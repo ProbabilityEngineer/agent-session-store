@@ -1,6 +1,6 @@
 ---
 id: ass-repo-identity-sidecar-policy
-status: open
+status: closed
 deps: [ass-repo-identity-model]
 links: []
 created: 2026-05-31T06:00:00Z

@@ -1,6 +1,6 @@
 ---
 id: ass-github-origin-rename-identity
-status: open
+status: closed
 deps: [ass-repo-identity-scan-write]
 links: []
 created: 2026-05-31T06:00:00Z
@@ -19,5 +19,5 @@ Detect repo identity continuity when a local repo path changes but the GitHub or
 - Detect renamed origin evidence when previous and current origins have matching repository identity signals, where available.
 - Add repo events such as `rename`, `move`, or `alias` with provenance from git origin observations.
 - Keep ambiguous cases as manual-review candidates, not authoritative facts.
-- Do not require GitHub API by default; support optional API enrichment later if credentials are available.
+- Do not require GitHub API. Use local origin URL normalization and non-API canonical/redirect evidence only.
 - TypeScript check passes.

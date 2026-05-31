@@ -59,11 +59,13 @@ New normalized records:
 - `repo_observations`: path/bucket/remote observations attached to a repo identity over optional valid time ranges.
 - `repo_events`: curated relationships such as `rename`, `move`, `swap`, `fork`, `archive`, `superseded_by`, and `alias`.
 
-Curated input lives at:
+Curated and observed sidecar input lives at:
 
 ```text
 ~/.pi/agent/session-store/repo-identities.jsonl
 ```
+
+Use `npm run scan-repos` to append observed repo identity/observation records from configured repo roots. The DB is a rebuildable projection of this sidecar plus other raw evidence, not the only copy of identity facts.
 
 Example records:
 

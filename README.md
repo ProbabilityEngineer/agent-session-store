@@ -21,6 +21,8 @@ git:github.com/ProbabilityEngineer/agent-session-store
 npm run build-store          # build SQLite + JSON exports
 npm run export-graph         # graph-ready JSON for pi-session-graph
 npm run repo-identities      # markdown report for repo identities/events
+npm run scan-repos           # append observed repo identity records to sidecar
+npm run enrich-github-repos  # optional GitHub API enrichment when GITHUB_TOKEN/GH_TOKEN is set
 npm run backup-readiness     # backup extraction readiness report
 npm run inventory-buckets    # session bucket inventory/reconciliation
 npm run logical-threads      # logical thread/resume target report
@@ -51,7 +53,7 @@ SQLite is the canonical local database. JSON exports are portable/reviewable pro
 
 Repo/project identity is modeled separately from cwd/path/bucket so renamed, swapped, moved, forked, or archived repos can be interpreted over time.
 
-Curated sidecar:
+Curated/observed sidecar. The DB is a projection; identity facts should be recoverable from sidecars/evidence:
 
 ```text
 ~/.pi/agent/session-store/repo-identities.jsonl
