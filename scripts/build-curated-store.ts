@@ -30,7 +30,7 @@ const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
 const sqlitePath = join(storeDir, "session-store.sqlite");
 const defaultCodingSessionsRoots = [
 	join(home, "Downloads", "coding-sessions"),
-	join(home, "Desktop", "developer-archive", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
+	join(home, "Desktop", "developer-archive", "coding-sessions", "keep-session-data"),
 	join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "developer", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
 ];
 const codingSessionsRoots = (process.env.AGENT_SESSION_EXTERNAL_ROOTS?.split(":").filter(Boolean) ?? defaultCodingSessionsRoots);
@@ -112,6 +112,7 @@ type BucketStatus = { id: string; root: string; bucket: string; decodedPath?: st
 type RepoIdentity = { id: string; stableName: string; displayName?: string; description?: string; confidence: string; source: string; metadata?: Json };
 type RepoObservation = { id: string; repoIdentityId: string; path?: string; bucket?: string; remoteUrl?: string; validFrom?: string; validTo?: string; confidence: string; source: string; evidenceId?: string; metadata?: Json };
 type RepoEvent = { id: string; eventType: "rename" | "move" | "swap" | "fork" | "archive" | "superseded_by" | "alias" | string; repoIdentityId?: string; relatedRepoIdentityId?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence: string; source: string; evidenceId?: string; manualReviewRequired: boolean; summary?: string; metadata?: Json };
+type Seen = { sources: Set<string>; sessions: Set<string>; obs: Set<string>; edges: Set<string>; labels: Set<string>; aliases: Set<string>; classes: Set<string>; evidence: Set<string>; backups: Set<string>; repos: Set<string>; artifacts: Set<string>; marks: Set<string>; batches: Set<string>; repoIdentities: Set<string>; repoObservations: Set<string>; repoEvents: Set<string> };
 type RepoIdentitySidecar = { kind: "repo-identity"; id?: string; stableName: string; displayName?: string; description?: string; confidence?: string; metadata?: Json } | { kind: "repo-observation"; repoIdentityId?: string; stableName?: string; path?: string; bucket?: string; remoteUrl?: string; validFrom?: string; validTo?: string; confidence?: string; evidence?: string; metadata?: Json } | { kind: "repo-event"; eventType: string; repoIdentityId?: string; stableName?: string; relatedRepoIdentityId?: string; relatedStableName?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence?: string; summary?: string; evidence?: string; manualReviewRequired?: boolean; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
@@ -334,6 +335,31 @@ async function addExternalProviderSessions(store: Store, seen: { sources: Set<st
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
 			const ids = [...new Set(fs.raw.match(/019[0-9a-f-]{32,}|[0-9a-f]{16}/g) ?? [])];
 			pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "manual-export", path), kind: ids.length > 1 ? "manual_session_bundle" : "manual_session_export", path, generatedAt: new Date().toISOString(), generator: "manual-export", inputHash: fs.contentSha256, metadata: { sourceId: manualSource, matchedProviderSessionIds: ids, byteCount: fs.fileSize, lineCount: fs.lineCount } });
+		}
+	}
+}
+
+function sessionTime(session: Session): string { return session.startTimestamp ?? session.firstSeenAt ?? session.endTimestamp ?? session.lastSeenAt ?? ""; }
+
+function deriveCrossProviderContinuity(store: Store, seen: Seen) {
+	const byCwd = new Map<string, Session[]>();
+	for (const session of store.sessions) {
+		const cwd = typeof session.metadata?.cwd === "string" ? session.metadata.cwd : undefined;
+		if (!cwd || session.metadata?.trivial || session.metadata?.testSession) continue;
+		const group = byCwd.get(cwd) ?? [];
+		group.push(session);
+		byCwd.set(cwd, group);
+	}
+	for (const [cwd, group] of byCwd) {
+		const providers = new Set(group.map((session) => session.provider));
+		if (providers.size < 2) continue;
+		group.sort((a, b) => sessionTime(a).localeCompare(sessionTime(b)) || a.id.localeCompare(b.id));
+		for (let i = 1; i < group.length; i++) {
+			const source = group[i - 1]!;
+			const target = group[i]!;
+			if (source.provider === target.provider) continue;
+			const edgeId = id("edge", "cross-provider-cwd", source.id, target.id);
+			pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType: "same_cwd_temporal", timestamp: target.startTimestamp ?? target.firstSeenAt, confidence: "low", provenance: "derived-cross-provider-cwd-time", metadata: { cwd, sourceProvider: source.provider, targetProvider: target.provider, reason: "same-cwd-consecutive-cross-provider-session" } });
 		}
 	}
 }
@@ -639,6 +665,7 @@ async function main() {
 	if (repoIdentitySidecar.length) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", repoIdentitySidecarPath), kind: "repo_identity_sidecar", path: repoIdentitySidecarPath, generatedAt, generator: "manual-curated-sidecar", metadata: { imported: true, recordCount: repoIdentitySidecar.length } });
 
 	await addExternalProviderSessions(store, seen, addSource);
+	deriveCrossProviderContinuity(store, seen);
 
 	deriveLogicalThreads(store);
 	deriveResumeTargets(store);
