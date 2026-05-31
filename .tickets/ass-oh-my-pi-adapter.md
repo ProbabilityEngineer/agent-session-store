@@ -1,6 +1,6 @@
 ---
 id: ass-oh-my-pi-adapter
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T06:25:00Z

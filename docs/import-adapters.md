@@ -38,23 +38,35 @@ Normalized facts:
 
 ### oh-my-pi
 
-Expected to be Pi-like but must remain a distinct provider. The adapter should not assume identical paths or relocation manifest format until sample data is inspected.
+Implemented as provider `oh-my-pi`. The adapter scans `omp/agent/sessions/**/*.jsonl`, parses the initial `type=session` row for short provider id, timestamp, cwd, and title, and stores event type counts plus line/byte/hash metadata. Manual HTML/Markdown exports are artifacts, not duplicate sessions.
 
 ### Codex
 
-TBD after sample export/logs. Preserve provider-native conversation/session ids, timestamps, cwd/project metadata if available, message/tool metadata counts, and content hashes.
+Implemented as provider `codex`. The adapter scans `codex/sessions/**/*.jsonl`, parses `session_meta`, `turn_context`, `event_msg`, and `response_item` rows for provider id, cwd, model/version metadata, timestamps, and event type counts. Transcript text is not stored by default.
 
 ### Claude
 
-TBD after sample export/logs. Treat project/session naming separately from cwd labels. Do not store transcript text by default.
+Implemented as provider `claude`. The adapter scans `claude/transcripts/*.jsonl` and stores metadata-only transcript observations: session id from filename, event/tool counts, timestamps, hashes, and cwd/path evidence when available. Claude project/task/plans/snapshot directories remain artifact/evidence candidates.
 
 ### OpenCode
 
-TBD after sample export/logs. Preserve provider-native ids and tool metadata where available.
+Implemented as provider `opencode`. The adapter scans `opencode-sessions/storage/session/*/*.json`, uses OpenCode session ids, project ids, directory/cwd, title/slug, created/updated times, and counts linked message files. Message/part raw text is not stored by default.
 
 ### Factory
 
-TBD after sample export/logs. Preserve provider-native ids, workspace/project labels, and event metadata.
+Implemented as provider `factory`. The adapter scans `factory/sessions/**/*.jsonl`, parses `session_start`, `message`, and `todo_state` rows, records cwd/title/owner/event counts, and marks one-row `session_start`-only observations as trivial.
+
+### Late
+
+Implemented as provider `late`. The adapter pairs `session-*.json` histories with `session-*.meta.json`, storing id/title/created/updated/message counts, role counts, hashes, and trivial/test flags for small `hi`/help sessions.
+
+### Rovo Dev
+
+Implemented as provider `rovodev`. The adapter scans `rovodev/sessions/*/session_context.json`, extracts session id, workspace path, title, message count, and metadata hashes. `prompt_history` is treated as artifact/evidence, not a session.
+
+### Manual exports
+
+Implemented as artifacts. The adapter scans `codex/manual-markdown-exports`, `omp/manual-markdown-exports`, and `omp/html-session-exports`, extracts embedded provider session ids, and records `manual_session_export` or `manual_session_bundle` artifacts linked by metadata. These are not imported as sessions.
 
 ### Git repository evidence
 

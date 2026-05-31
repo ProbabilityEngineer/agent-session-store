@@ -1,6 +1,6 @@
 ---
 id: ass-manual-export-artifacts
-status: open
+status: closed
 deps: [ass-codex-adapter, ass-oh-my-pi-adapter]
 links: []
 created: 2026-05-31T07:05:00Z

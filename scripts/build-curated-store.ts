@@ -28,6 +28,10 @@ const checkpointCandidatePaths = [
 ];
 const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
 const sqlitePath = join(storeDir, "session-store.sqlite");
+const codingSessionsRoots = [
+	join(home, "Downloads", "coding-sessions"),
+	join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "developer", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
+];
 
 type Json = Record<string, unknown>;
 
@@ -117,6 +121,14 @@ async function readJsonl<T>(path: string): Promise<T[]> { if (!(await exists(pat
 async function readJson<T>(path: string): Promise<T | undefined> { if (!(await exists(path))) return undefined; return JSON.parse(await readFile(path, "utf8")) as T; }
 function rowTimestamp(row: Json): string | undefined { for (const key of ["timestamp", "ts", "createdAt", "created_at"]) if (typeof row[key] === "string" && /^\d{4}-\d{2}-\d{2}T/.test(row[key])) return row[key] as string; const msg = row.message as Json | undefined; return typeof msg?.timestamp === "string" ? msg.timestamp : undefined; }
 function rowCwd(row: Json): string | undefined { if (typeof row.cwd === "string") return row.cwd; const session = row.session as Json | undefined; return typeof session?.cwd === "string" ? session.cwd : undefined; }
+function asObj(value: unknown): Json | undefined { return value && typeof value === "object" && !Array.isArray(value) ? value as Json : undefined; }
+function str(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value : undefined; }
+function num(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
+function isoFromMs(value: unknown): string | undefined { const n = num(value); return n ? new Date(n).toISOString() : undefined; }
+function minTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) <= 0 ? a : b; }
+function maxTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) >= 0 ? a : b; }
+function eventType(row: Json): string { return str(row.type) ?? str(asObj(row.payload)?.type) ?? str(row.role) ?? "unknown"; }
+
 function rowDisplayName(row: Json): string | undefined {
 	for (const key of ["displayName", "display_name", "name", "sessionName", "session_name"]) if (typeof row[key] === "string" && row[key].trim()) return row[key] as string;
 	const session = row.session as Json | undefined;
@@ -159,6 +171,34 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 		session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}) } },
 		observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}) } },
 	};
+}
+
+async function fileStats(path: string) {
+	const [raw, st] = await Promise.all([readFile(path, "utf8"), stat(path)]);
+	return { raw, fileSize: st.size, fileBirthtime: st.birthtime.toISOString(), fileMtime: st.mtime.toISOString(), contentSha256: sha(raw), lineCount: raw.split("\n").filter((line) => line.trim()).length };
+}
+
+function externalSession(path: string, sourceId: string, provider: string, providerSessionId: string, meta: { cwd?: string; title?: string; start?: string; end?: string; lineCount?: number; byteCount?: number; contentSha256?: string; fileBirthtime?: string; fileMtime?: string; eventCounts?: Record<string, number>; extra?: Json }): { session: Session; observation: SessionObservation } {
+	const sid = id("session", provider, providerSessionId, path);
+	const metadata = { ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.title ? { displayName: meta.title } : {}), ...(meta.eventCounts ? { eventCounts: meta.eventCounts } : {}), ...(meta.extra ?? {}) };
+	return {
+		session: { id: sid, provider, providerSessionId, canonicalKey: path, firstSeenAt: meta.start, lastSeenAt: meta.end, startTimestamp: meta.start, endTimestamp: meta.end, lineCount: meta.lineCount, byteCount: meta.byteCount, contentSha256: meta.contentSha256, metadata },
+		observation: { id: id("obs", sourceId, path), sessionId: sid, sourceId, path, providerSessionId, observedAt: new Date().toISOString(), snapshotLabel: "external-import", fileBirthtime: meta.fileBirthtime, fileMtime: meta.fileMtime, fileSize: meta.byteCount, lineCount: meta.lineCount, firstEventAt: meta.start, lastEventAt: meta.end, contentSha256: meta.contentSha256, metadata },
+	};
+}
+
+async function walkFiles(root: string, predicate: (path: string) => boolean): Promise<string[]> {
+	const found: string[] = [];
+	async function walk(dir: string) {
+		const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+		for (const entry of entries) {
+			const path = join(dir, entry.name);
+			if (entry.isDirectory()) await walk(path);
+			else if (entry.isFile() && predicate(path)) found.push(path);
+		}
+	}
+	if (await exists(root)) await walk(root);
+	return found.sort();
 }
 
 async function listSessionFiles(dir = sessionsDir): Promise<string[]> {
@@ -209,6 +249,91 @@ class DisjointSet {
 		return root;
 	}
 	union(a: string, b: string) { this.parents.set(this.find(a), this.find(b)); }
+}
+
+async function addExternalProviderSessions(store: Store, seen: { sources: Set<string>; sessions: Set<string>; obs: Set<string>; labels: Set<string>; artifacts: Set<string> }, addSource: (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => string) {
+	function addParsed(provider: string, sourceId: string, path: string, providerSessionId: string, meta: Parameters<typeof externalSession>[4]) {
+		const { session, observation } = externalSession(path, sourceId, provider, providerSessionId, meta);
+		pushUnique(store.sessions, seen.sessions, session);
+		pushUnique(store.sessionObservations, seen.obs, observation);
+		if (meta.title) pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "display", meta.title), targetType: "session", targetId: session.id, labelType: "display_name", value: meta.title, confidence: "observed", sourceId });
+		if (meta.cwd) pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "cwd", meta.cwd), targetType: "session", targetId: session.id, labelType: "cwd", value: meta.cwd, confidence: "observed", sourceId });
+	}
+	for (const root of codingSessionsRoots) {
+		const base = root;
+		// Codex JSONL sessions.
+		const codexRoot = join(base, "codex", "sessions");
+		const codexSource = addSource("codex", "session_archive", codexRoot, "Codex sessions");
+		for (const path of await walkFiles(codexRoot, (p) => p.endsWith(".jsonl"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			let sid = basename(path).match(/(019[0-9a-f-]{32,})/)?.[1] ?? basename(path).replace(/\.jsonl$/, "");
+			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row) ?? str(asObj(row.payload)?.timestamp); start = minTs(start, ts); end = maxTs(end, ts); const payload = asObj(row.payload); cwd ??= str(payload?.cwd) ?? str(asObj(payload?.turn_context)?.cwd); title ??= str(payload?.title); sid = str(payload?.id) ?? sid; } catch {} }
+			addParsed("codex", codexSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+		}
+		// oh-my-pi JSONL sessions.
+		const ompRoot = join(base, "omp", "agent", "sessions");
+		const ompSource = addSource("oh-my-pi", "session_archive", ompRoot, "oh-my-pi sessions");
+		for (const path of await walkFiles(ompRoot, (p) => p.endsWith(".jsonl"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			let sid = basename(path).match(/_([0-9a-f]{16})\.jsonl$/)?.[1] ?? basename(path).replace(/\.jsonl$/, "");
+			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.title); } } catch {} }
+			addParsed("oh-my-pi", ompSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+		}
+		// Factory JSONL sessions.
+		const factoryRoot = join(base, "factory", "sessions");
+		const factorySource = addSource("factory", "session_archive", factoryRoot, "Factory sessions");
+		for (const path of await walkFiles(factoryRoot, (p) => p.endsWith(".jsonl"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			let sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session_start") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.sessionTitle) ?? str(row.title); } } catch {} }
+			addParsed("factory", factorySource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, extra: { trivial: Object.keys(counts).length === 1 && counts.session_start === 1 } });
+		}
+		// Claude transcripts.
+		const claudeRoot = join(base, "claude");
+		const claudeSource = addSource("claude", "session_archive", claudeRoot, "Claude sessions");
+		for (const path of await walkFiles(join(claudeRoot, "transcripts"), (p) => p.endsWith(".jsonl"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			const sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); cwd ??= rowCwd(row) ?? str(asObj(row.tool_input)?.path); title ??= str(row.summary); } catch {} }
+			addParsed("claude", claudeSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+		}
+		// Rovo Dev sessions.
+		const rovoRoot = join(base, "rovodev", "sessions");
+		const rovoSource = addSource("rovodev", "session_archive", rovoRoot, "Rovo Dev sessions");
+		for (const path of await walkFiles(rovoRoot, (p) => p.endsWith("session_context.json"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			const obj = JSON.parse(fs.raw) as Json; const artifacts = asObj(asObj(obj.deps)?.artifacts); const meta = asObj(artifacts?.["metadata.json"]); const messages = Array.isArray(obj.message_history) ? obj.message_history as Json[] : [];
+			addParsed("rovodev", rovoSource, path, str(obj.id) ?? basename(dirname(path)), { cwd: str(meta?.workspace_path), title: str(meta?.title), lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: { message: messages.length }, extra: { messageCount: messages.length } });
+		}
+		// Late sessions.
+		const lateRoot = join(base, "late", "sessions");
+		const lateSource = addSource("late", "session_archive", lateRoot, "Late sessions");
+		for (const path of await walkFiles(lateRoot, (p) => /^session-.*\.json$/.test(basename(p)) && !p.endsWith(".meta.json"))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			const rows = JSON.parse(fs.raw) as Json[]; const meta = await readJson<Json>(path.replace(/\.json$/, ".meta.json")); const counts: Record<string, number> = {};
+			for (const row of Array.isArray(rows) ? rows : []) counts[str(row.role) ?? "unknown"] = (counts[str(row.role) ?? "unknown"] ?? 0) + 1;
+			addParsed("late", lateSource, path, str(meta?.id) ?? basename(path).replace(/\.json$/, ""), { title: str(meta?.title), start: str(meta?.created_at), end: str(meta?.last_updated), lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, extra: { messageCount: num(meta?.message_count), trivial: (num(meta?.message_count) ?? 0) <= 3 } });
+		}
+		// OpenCode multi-file sessions.
+		const ocRoot = join(base, "opencode-sessions", "storage");
+		const ocSource = addSource("opencode", "session_archive", ocRoot, "OpenCode sessions");
+		for (const path of await walkFiles(join(ocRoot, "session"), (p) => p.endsWith(".json") && basename(p) !== ".DS_Store")) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			const obj = JSON.parse(fs.raw) as Json; const time = asObj(obj.time); const sid = str(obj.id) ?? basename(path).replace(/\.json$/, "");
+			const messages = await walkFiles(join(ocRoot, "message", sid), (p) => p.endsWith(".json")).catch(() => []);
+			addParsed("opencode", ocSource, path, sid, { cwd: str(obj.directory), title: str(obj.title) ?? str(obj.slug), start: isoFromMs(time?.created), end: isoFromMs(time?.updated), lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: { message: messages.length }, extra: { projectId: str(obj.projectID), slug: str(obj.slug), messageCount: messages.length } });
+		}
+		// Manual exports as artifacts, not sessions.
+		const manualRoots = [join(base, "codex", "manual-markdown-exports"), join(base, "omp", "manual-markdown-exports"), join(base, "omp", "html-session-exports")];
+		const manualSource = addSource("manual-curation", "manual_session_exports", base, "Manual session exports");
+		for (const root of manualRoots) for (const path of await walkFiles(root, (p) => /\.(md|html)$/i.test(p))) {
+			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
+			const ids = [...new Set(fs.raw.match(/019[0-9a-f-]{32,}|[0-9a-f]{16}/g) ?? [])];
+			pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "manual-export", path), kind: ids.length > 1 ? "manual_session_bundle" : "manual_session_export", path, generatedAt: new Date().toISOString(), generator: "manual-export", inputHash: fs.contentSha256, metadata: { sourceId: manualSource, matchedProviderSessionIds: ids, byteCount: fs.fileSize, lineCount: fs.lineCount } });
+		}
+	}
 }
 
 function deriveLogicalThreads(store: Store) {
@@ -510,6 +635,8 @@ async function main() {
 		}
 	}
 	if (repoIdentitySidecar.length) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", repoIdentitySidecarPath), kind: "repo_identity_sidecar", path: repoIdentitySidecarPath, generatedAt, generator: "manual-curated-sidecar", metadata: { imported: true, recordCount: repoIdentitySidecar.length } });
+
+	await addExternalProviderSessions(store, seen, addSource);
 
 	deriveLogicalThreads(store);
 	deriveResumeTargets(store);
