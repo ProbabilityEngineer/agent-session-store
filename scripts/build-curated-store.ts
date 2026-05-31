@@ -28,10 +28,12 @@ const checkpointCandidatePaths = [
 ];
 const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
 const sqlitePath = join(storeDir, "session-store.sqlite");
-const codingSessionsRoots = [
+const defaultCodingSessionsRoots = [
 	join(home, "Downloads", "coding-sessions"),
+	join(home, "Desktop", "developer-archive", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
 	join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "developer", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
 ];
+const codingSessionsRoots = (process.env.AGENT_SESSION_EXTERNAL_ROOTS?.split(":").filter(Boolean) ?? defaultCodingSessionsRoots);
 
 type Json = Record<string, unknown>;
 
