@@ -15,7 +15,9 @@ const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
 const graphDir = join(agentDir, "session-graph");
 const storeDir = process.env.AGENT_SESSION_STORE_DIR ?? join(agentDir, "session-store");
 const sessionsDir = join(agentDir, "sessions");
-const manifestPath = join(agentDir, "relocations.jsonl");
+const legacyManifestPath = join(agentDir, "relocations.jsonl");
+const sessionMoveManifestPath = join(agentDir, "session-move", "manifests", "relocations.jsonl");
+const manifestPaths = [legacyManifestPath, sessionMoveManifestPath];
 const overlaysPath = join(graphDir, "lineage-overlays.jsonl");
 const preManifestPath = join(graphDir, "pre-manifest-lineage.json");
 const prefixLineagePath = join(graphDir, "prefix-lineage.json");
@@ -60,6 +62,7 @@ type RelocationRecord = {
 	metadata?: Json;
 	metadata_json?: string;
 	batchId?: string;
+	__manifestPath?: string;
 };
 
 type OverlayRecord =
@@ -131,6 +134,19 @@ function sessionIdFromPath(path: string) { return basename(path).match(/_([0-9a-
 function sessionStartTimestamp(path: string) { return basename(path).match(/^(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z)/)?.[1]?.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z$/, "T$1:$2:$3.$4Z"); }
 async function exists(path: string) { try { await stat(path); return true; } catch { return false; } }
 async function readJsonl<T>(path: string): Promise<T[]> { if (!(await exists(path))) return []; const raw = await readFile(path, "utf8"); return raw.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line) as T); }
+async function readRelocationManifests(paths: string[]): Promise<RelocationRecord[]> {
+	const seen = new Set<string>();
+	const out: RelocationRecord[] = [];
+	for (const path of paths) {
+		for (const record of await readJsonl<RelocationRecord>(path)) {
+			const key = JSON.stringify({ ...record, __manifestPath: undefined });
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({ ...record, __manifestPath: path });
+		}
+	}
+	return out.sort((a, b) => a.ts.localeCompare(b.ts));
+}
 async function readJson<T>(path: string): Promise<T | undefined> { if (!(await exists(path))) return undefined; return JSON.parse(await readFile(path, "utf8")) as T; }
 function rowTimestamp(row: Json): string | undefined { for (const key of ["timestamp", "ts", "createdAt", "created_at"]) if (typeof row[key] === "string" && /^\d{4}-\d{2}-\d{2}T/.test(row[key])) return row[key] as string; const msg = row.message as Json | undefined; return typeof msg?.timestamp === "string" ? msg.timestamp : undefined; }
 function rowCwd(row: Json): string | undefined { if (typeof row.cwd === "string") return row.cwd; const session = row.session as Json | undefined; return typeof session?.cwd === "string" ? session.cwd : undefined; }
@@ -153,7 +169,7 @@ function relocationOperationType(record: RelocationRecord): string {
 	return recordString(record, "operationType") ?? (record.batchId ? "bucket_relocation" : "session_relocation");
 }
 function relocationTool(record: RelocationRecord): string {
-	return recordString(record, "tool") ?? "pi-relocate";
+	return recordString(record, "tool") ?? (record.__manifestPath === sessionMoveManifestPath ? "pi-session-move" : "pi-relocate");
 }
 function relocationMode(record: RelocationRecord): string {
 	return record.mode ?? "move";
@@ -505,7 +521,7 @@ function deriveLogicalThreads(store: Store) {
 		if (edgeClassifications.some((classification) => classification.includes("context"))) { relation = "context_jump"; reasons.push("curated-context-classification"); }
 		else if (edge.edgeType === "branch" || edge.metadata?.mode === "branch") { relation = "fork"; reasons.push("explicit-branch-mode"); }
 		else if ((childCounts.get(edge.sourceSessionId) ?? 0) > 1) { relation = "fork"; reasons.push("multiple-children-from-source"); }
-		else if (edge.provenance === "pi-relocate-manifest" && edge.confidence === "authoritative") { relation = "continuation"; reasons.push("authoritative-manifest-move"); }
+		else if ((edge.provenance === "pi-relocate-manifest" || edge.provenance === "pi-session-move-manifest") && edge.confidence === "authoritative") { relation = "continuation"; reasons.push("authoritative-manifest-move"); }
 		else if (edgeClassifications.some((classification) => classification.includes("continuation"))) { relation = "continuation"; reasons.push("curated-continuation-classification"); }
 		else { relation = "unknown"; reasons.push("insufficient-deterministic-evidence"); }
 		store.threadEdges.push({ id: id("thread_edge", threadId, edge.id), threadId, sourceSessionId: edge.sourceSessionId, targetSessionId: edge.targetSessionId, relation, edgeId: edge.id, confidence: edge.confidence, source: edge.provenance, metadata: { classifications: edgeClassifications, edgeType: edge.edgeType, reasons } });
@@ -641,7 +657,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 
 async function main() {
 	const generatedAt = new Date().toISOString();
-	const manifest = await readJsonl<RelocationRecord>(manifestPath);
+	const manifest = await readRelocationManifests(manifestPaths);
 	const overlays = await readJsonl<OverlayRecord>(overlaysPath);
 	const preManifest = await readJson<Json>(preManifestPath);
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
@@ -650,11 +666,12 @@ async function main() {
 	const repoIdentitySidecar = await readJsonl<RepoIdentitySidecar>(repoIdentitySidecarPath);
 	const observationMarkSidecar = await readJsonl<ObservationMarkSidecar>(observationMarksSidecarPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPaths: manifestPaths.join(":"), legacyManifestPath, sessionMoveManifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>(), repoIdentities: new Set<string>(), repoObservations: new Set<string>(), repoEvents: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
-	const manifestSource = addSource("pi", "relocation_manifest", manifestPath, "Pi relocation manifest");
+	const manifestSources = new Map(manifestPaths.map((path) => [path, addSource("pi", "relocation_manifest", path, path === sessionMoveManifestPath ? "Pi session-move manifest" : "Pi legacy relocation manifest")]));
+	const manifestSource = manifestSources.get(legacyManifestPath)!;
 	const overlaySource = addSource("manual-curation", "manual_overlay", overlaysPath, "Lineage overlays");
 	const preSource = addSource("manual-curation", "curated_report", preManifestPath, "Pre-manifest lineage report");
 	const prefixSource = addSource("manual-curation", "curated_report", prefixLineagePath, "Prefix lineage report");
@@ -712,22 +729,23 @@ async function main() {
 		const mode = relocationMode(record);
 		const sourceRepo = recordString(record, "sourceRepo");
 		const targetRepo = recordString(record, "targetRepo");
+		const manifestRecordSource = manifestSources.get(record.__manifestPath ?? legacyManifestPath) ?? manifestSource;
 		const edgeId = id("edge", "manifest", String(index), record.ts, record.sourceSession, record.destinationSession);
 		const sourceObservationId = obsByPath.get(record.sourceSession)?.id;
 		const targetObservationId = obsByPath.get(record.destinationSession)?.id;
 		const edgeType = operationType === "repo_move" ? "repo_move" : mode === "branch" || mode === "diverge" ? "branch" : "relocation";
-		const manifestMetadata = { manifestIndex: index, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, operationType, tool, sourceRepo, targetRepo, batchId: record.batchId };
+		const manifestMetadata = { manifestIndex: index, manifestPath: record.__manifestPath, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, operationType, tool, sourceRepo, targetRepo, batchId: record.batchId };
 		pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType, timestamp: record.ts, sourceObservationId, targetObservationId, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", provenance: `${tool}-manifest`, metadata: manifestMetadata });
 		if (record.batchId) pushUnique(store.batchOperations, seen.batches, { id: record.batchId, operationType, sourcePath: record.fromCwd, destinationPath: record.toCwd, timestamp: record.ts, source: tool, status: "applied", metadata: { mode, operationType, tool, sourceRepo, targetRepo } });
 		if (operationType === "repo_move") {
 			pushUnique(store.repoEvents, seen.repoEvents, { id: id("repo_event", operationType, record.ts, sourceRepo ?? record.fromCwd, targetRepo ?? record.toCwd, record.sourceSession, record.destinationSession), eventType: "move", fromPath: sourceRepo ?? record.fromCwd, toPath: targetRepo ?? record.toCwd, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", source: tool, manualReviewRequired: false, summary: `Repo moved: ${sourceRepo ?? record.fromCwd} -> ${targetRepo ?? record.toCwd}`, metadata: manifestMetadata });
 		}
 		if (mode === "move" && sourceObservationId && targetObservationId) {
-			const reason = operationType === "repo_move" ? "relocated by repo move semantics" : "relocated by pi-relocate move semantics";
+			const reason = operationType === "repo_move" ? "relocated by repo move semantics" : `relocated by ${tool} move semantics`;
 			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "superseded", targetObservationId, record.ts), observationId: sourceObservationId, markType: "superseded", reason, replacementObservationId: targetObservationId, source: `${tool}-manifest`, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId, operationType, tool, sourceRepo, targetRepo } });
 			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "deletion_candidate", targetObservationId, record.ts), observationId: sourceObservationId, markType: "deletion_candidate", reason: "old copy after relocation; requires manual review before deletion", replacementObservationId: targetObservationId, source: `${tool}-manifest`, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId, operationType, tool, sourceRepo, targetRepo } });
 		}
-		for (const [type, value, targetId] of [["cwd", record.fromCwd, source.id], ["cwd", record.toCwd, target.id]] as const) if (value && !value.startsWith("(")) pushUnique(store.labels, seen.labels, { id: id("label", edgeId, type, targetId, value), targetType: "session", targetId, labelType: type, value, confidence: "authoritative", sourceId: manifestSource });
+		for (const [type, value, targetId] of [["cwd", record.fromCwd, source.id], ["cwd", record.toCwd, target.id]] as const) if (value && !value.startsWith("(")) pushUnique(store.labels, seen.labels, { id: id("label", edgeId, type, targetId, value), targetType: "session", targetId, labelType: type, value, confidence: "authoritative", sourceId: manifestRecordSource });
 	});
 
 	for (const record of overlays) {

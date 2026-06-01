@@ -11,7 +11,7 @@ git:github.com/ProbabilityEngineer/agent-session-store
 ## Principles
 
 - Do not mutate raw Pi session JSONLs.
-- Do not rewrite `~/.pi/agent/relocations.jsonl`.
+- Do not rewrite legacy `~/.pi/agent/relocations.jsonl` or namespaced `~/.pi/agent/session-move/manifests/relocations.jsonl` raw manifests.
 - Store metadata, hashes, timestamps, labels, counts, and evidence by default, not raw transcript content.
 - Treat cwd/path/bucket as observations, not durable project identity.
 

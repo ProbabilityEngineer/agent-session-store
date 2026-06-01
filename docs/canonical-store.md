@@ -42,7 +42,8 @@ until `pi-session-graph` reads the store directly.
 Raw inputs are never rewritten:
 
 - Pi session JSONLs under `~/.pi/agent/sessions/**`
-- Pi relocation manifest `~/.pi/agent/relocations.jsonl`
+- Legacy Pi relocation manifest `~/.pi/agent/relocations.jsonl`
+- Namespaced session-move manifest `~/.pi/agent/session-move/manifests/relocations.jsonl`
 - backup-extracted session files
 - imported provider transcripts/logs
 - source repository git/jj history
