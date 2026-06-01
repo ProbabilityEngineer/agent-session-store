@@ -7,6 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const debugBuild = Boolean(process.env.AGENT_SESSION_STORE_DEBUG);
+function debug(message: string) { if (debugBuild) console.error(`[build-store] ${message}`); }
 
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
@@ -131,6 +133,17 @@ function isoFromMs(value: unknown): string | undefined { const n = num(value); r
 function minTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) <= 0 ? a : b; }
 function maxTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) >= 0 ? a : b; }
 function eventType(row: Json): string { return str(row.type) ?? str(asObj(row.payload)?.type) ?? str(row.role) ?? "unknown"; }
+function compactionDetails(row: Json): Json | undefined {
+	const message = asObj(row.message);
+	const details = asObj(message?.details) ?? asObj(row.details);
+	const direct = asObj(details?.rtkCompaction) ?? asObj(asObj(details?.metadata)?.rtkCompaction);
+	const nested = asObj(asObj(details?.ptcValue)?.rtkCompaction);
+	const compaction = direct ?? nested;
+	const summary = typeof row.summary === "string" ? row.summary : undefined;
+	if (compaction) return { sourceType: eventType(row), ...compaction, ...(summary ? { summaryLength: summary.length, summarySha256: sha(summary) } : {}) };
+	if (eventType(row) === "compaction" && summary?.trim()) return { sourceType: "compaction", summaryRecord: true, summaryLength: summary.length, summarySha256: sha(summary) };
+	return undefined;
+}
 
 function rowDisplayName(row: Json): string | undefined {
 	for (const key of ["displayName", "display_name", "name", "sessionName", "session_name"]) if (typeof row[key] === "string" && row[key].trim()) return row[key] as string;
@@ -147,6 +160,14 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 	let lastEventAt: string | undefined;
 	let cwd: string | undefined;
 	let displayName: string | undefined;
+	let compactionEventCount = 0;
+	let summaryEventCount = 0;
+	let compactedLineCount = 0;
+	let compactedCharCount = 0;
+	let firstCompactionAt: string | undefined;
+	let lastCompactionAt: string | undefined;
+	const compactionSummaryHashes = new Set<string>();
+	const compactionSampleLines: number[] = [];
 	let contentSha256: string | undefined;
 	let fileSize: number | undefined;
 	let fileBirthtime: string | undefined;
@@ -167,12 +188,23 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 				const candidate = rowCwd(row);
 				if (candidate && (!cwd || candidate.length > cwd.length)) cwd = candidate;
 				displayName ??= rowDisplayName(row);
+				const compaction = compactionDetails(row);
+				if (compaction) {
+					compactionEventCount++;
+					if (compaction.summaryRecord) summaryEventCount++;
+					compactedLineCount += num(compaction.compactedLineCount) ?? 0;
+					compactedCharCount += num(compaction.compactedCharCount) ?? 0;
+					if (ts) { firstCompactionAt = minTs(firstCompactionAt, ts); lastCompactionAt = maxTs(lastCompactionAt, ts); }
+					if (typeof compaction.summarySha256 === "string") compactionSummaryHashes.add(compaction.summarySha256);
+					if (compactionSampleLines.length < 5) compactionSampleLines.push(lineCount);
+				}
 			} catch { /* metadata-only scan tolerates malformed rows */ }
 		}
 	}
+	const compactionMetadata = compactionEventCount ? { eventCount: compactionEventCount, summaryEventCount, compactedLineCount, compactedCharCount, firstCompactionAt, lastCompactionAt, summaryHashes: [...compactionSummaryHashes].sort(), sampleLines: compactionSampleLines, provenance: "pi-session-jsonl", privacyStatus: "metadata-only" } : undefined;
 	return {
-		session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}) } },
-		observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}) } },
+		session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
+		observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
 	};
 }
 
@@ -370,7 +402,8 @@ function words(value: unknown): string[] {
 }
 
 function deriveAdditionalMetadata(store: Store, seen: Seen, generatedAt: string) {
-	const repoByPath = [...store.repoObservations].filter((obs) => obs.path).sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0));
+	const confidenceRank = (confidence: string) => ({ manual: 4, authoritative: 3, observed: 2, high: 2, medium: 1, low: 0 }[confidence] ?? 0);
+	const repoByPath = [...store.repoObservations].filter((obs) => obs.path).sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0) || confidenceRank(b.confidence) - confidenceRank(a.confidence));
 	const repoFor = (cwd?: string) => cwd ? repoByPath.find((obs) => obs.path && (cwd === obs.path || cwd.startsWith(`${obs.path}/`))) : undefined;
 	const byRepo = new Map<string, Session[]>();
 	for (const session of store.sessions) {
@@ -602,6 +635,7 @@ async function main() {
 	const repoIdentitySource = addSource("manual-curation", "repo_identity_sidecar", repoIdentitySidecarPath, "Repo identity sidecar");
 	store.importRuns.push({ id: id("run", generatedAt, "build-curated-store"), sourceId: liveSource, startedAt: generatedAt, finishedAt: generatedAt, tool: "scripts/build-curated-store.ts", status: "ok", stats: { manifestRecords: manifest.length, overlayRecords: overlays.length } });
 
+	debug("collecting live session paths");
 	const paths = new Set<string>(await listSessionFiles());
 	for (const record of manifest) { paths.add(record.sourceSession); paths.add(record.destinationSession); }
 	for (const record of overlays) {
@@ -611,16 +645,23 @@ async function main() {
 	}
 	const obsByPath = new Map<string, SessionObservation>();
 	const sessionByPath = new Map<string, Session>();
+	debug(`importing ${paths.size} pi session paths`);
 	for (const path of [...paths].sort()) {
 		const source = path.includes("/Downloads/session-backups/") ? addSource("backup-snapshot", "backup_snapshot", path.split("/Macintosh HD/")[0], basename(path.split("/Macintosh HD/")[0])) : liveSource;
 		const { session, observation } = await sessionObservation(path, source);
 		pushUnique(store.sessions, seen.sessions, session);
 		pushUnique(store.sessionObservations, seen.obs, observation);
 		if (typeof session.metadata?.displayName === "string") pushUnique(store.labels, seen.labels, { id: id("label", "display", session.id, session.metadata.displayName), targetType: "session", targetId: session.id, labelType: "display_name", value: session.metadata.displayName, confidence: "authoritative", sourceId: source });
+		const compaction = asObj(observation.metadata?.compaction);
+		if (compaction) {
+			pushUnique(store.evidence, seen.evidence, { id: id("evidence", "compaction", observation.id), kind: "compaction_summary", sourceId: source, targetType: "session", targetId: session.id, timestamp: str(compaction.lastCompactionAt) ?? observation.lastEventAt, confidence: "authoritative", summary: `Pi compaction metadata observed in ${basename(path)}`, data: { observationId: observation.id, path, ...compaction } });
+			store.checkpointArtifacts.push({ id: id("checkpoint", "compaction", observation.id), sessionId: session.id, observationId: observation.id, kind: "compaction_summary", path, generatedAt: str(compaction.lastCompactionAt) ?? generatedAt, generator: "scripts/build-curated-store.ts", inputHash: observation.contentSha256, privacyStatus: "metadata-only", summary: `Pi compaction metadata: ${compaction.eventCount ?? "?"} events`, metadata: compaction });
+		}
 		obsByPath.set(path, observation);
 		sessionByPath.set(path, session);
 	}
 
+	debug("deriving relocation manifest edges");
 	manifest.forEach((record, index) => {
 		const source = sessionByPath.get(record.sourceSession);
 		const target = sessionByPath.get(record.destinationSession);
@@ -706,19 +747,27 @@ async function main() {
 	}
 	if (repoIdentitySidecar.length) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", repoIdentitySidecarPath), kind: "repo_identity_sidecar", path: repoIdentitySidecarPath, generatedAt, generator: "manual-curated-sidecar", metadata: { imported: true, recordCount: repoIdentitySidecar.length } });
 
+	debug("importing external provider sessions");
 	await addExternalProviderSessions(store, seen, addSource);
+	debug(`after external imports: ${store.sessions.length} sessions`);
 	deriveCrossProviderContinuity(store, seen);
+	debug(`after cross-provider continuity: ${store.edges.length} edges`);
 	deriveAdditionalMetadata(store, seen, generatedAt);
+	debug("after additional metadata");
 
 	deriveLogicalThreads(store);
+	debug("after logical threads");
 	deriveResumeTargets(store);
+	debug("after resume targets");
 	store.sources.sort((a, b) => a.id.localeCompare(b.id));
 	for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses", "repoIdentities", "repoObservations", "repoEvents"] as const) store[key].sort((a, b) => a.id.localeCompare(b.id));
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(store, null, 2) + "\n";
+	debug("writing exports");
 	await writeFile(join(storeDir, "session-store.export.json"), out);
 	await writeFile(join(graphDir, "curated-store.json"), out);
+	debug("writing sqlite");
 	replaceSqlite(sqlitePath, store);
 	console.log(`Wrote ${store.sessions.length} sessions, ${store.edges.length} edges, ${store.evidence.length} evidence records to ${join(storeDir, "session-store.export.json")}`);
 	console.log(`Wrote SQLite store to ${sqlitePath}`);

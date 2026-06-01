@@ -1,6 +1,6 @@
 ---
 id: ass-cyp-project-alias
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T17:00:00Z
@@ -31,3 +31,8 @@ Unify historical cwd/path labels for the Check Your Photos/CYP workstream so rep
 ## Progress
 
 Added manual repo identity sidecar records under `~/.pi/agent/session-store/repo-identities.jsonl` for `project:check-your-photos-cyp` with display label `Check Your Photos / CYP` and historical alias observations. Full validation is still open because `npm run build-store` timed out and needs investigation before closing.
+
+
+## Closure
+
+Added curated `project:check-your-photos-cyp` sidecar observations for relative and absolute historical cwd aliases and adjusted repo identity matching to prefer higher-confidence manual observations on equal-length path matches. Validated with `npm run build-store`/`npm run export-graph`; current store maps 96 CYP sessions across Pi, Codex, and oh-my-pi to `Check Your Photos / CYP`.
