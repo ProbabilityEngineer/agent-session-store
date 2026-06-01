@@ -1,6 +1,6 @@
 ---
 id: ass-top-level-repo-move-manifest
-status: open
+status: closed
 type: feature
 priority: 1
 created: 2026-06-01T00:00:00Z

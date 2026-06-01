@@ -52,7 +52,13 @@ type RelocationRecord = {
 	confidence?: string;
 	sourceSessionId?: string;
 	destinationSessionId?: string;
-	mode?: "move" | "branch";
+	mode?: "move" | "branch" | "diverge";
+	operationType?: string;
+	tool?: string;
+	sourceRepo?: string;
+	targetRepo?: string;
+	metadata?: Json;
+	metadata_json?: string;
 	batchId?: string;
 };
 
@@ -135,6 +141,23 @@ function isoFromMs(value: unknown): string | undefined { const n = num(value); r
 function minTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) <= 0 ? a : b; }
 function maxTs(a?: string, b?: string) { if (!a) return b; if (!b) return a; return a.localeCompare(b) >= 0 ? a : b; }
 function eventType(row: Json): string { return str(row.type) ?? str(asObj(row.payload)?.type) ?? str(row.role) ?? "unknown"; }
+function recordMetadata(record: { metadata?: Json; metadata_json?: string }): Json {
+	if (record.metadata) return record.metadata;
+	if (record.metadata_json) { try { return JSON.parse(record.metadata_json) as Json; } catch { return {}; } }
+	return {};
+}
+function recordString(record: RelocationRecord, key: "operationType" | "tool" | "sourceRepo" | "targetRepo"): string | undefined {
+	return str(record[key]) ?? str(recordMetadata(record)[key]);
+}
+function relocationOperationType(record: RelocationRecord): string {
+	return recordString(record, "operationType") ?? (record.batchId ? "bucket_relocation" : "session_relocation");
+}
+function relocationTool(record: RelocationRecord): string {
+	return recordString(record, "tool") ?? "pi-relocate";
+}
+function relocationMode(record: RelocationRecord): string {
+	return record.mode ?? "move";
+}
 function compactionDetails(row: Json): Json | undefined {
 	const message = asObj(row.message);
 	const details = asObj(message?.details) ?? asObj(row.details);
@@ -684,14 +707,25 @@ async function main() {
 		const source = sessionByPath.get(record.sourceSession);
 		const target = sessionByPath.get(record.destinationSession);
 		if (!source || !target) return;
+		const operationType = relocationOperationType(record);
+		const tool = relocationTool(record);
+		const mode = relocationMode(record);
+		const sourceRepo = recordString(record, "sourceRepo");
+		const targetRepo = recordString(record, "targetRepo");
 		const edgeId = id("edge", "manifest", String(index), record.ts, record.sourceSession, record.destinationSession);
 		const sourceObservationId = obsByPath.get(record.sourceSession)?.id;
 		const targetObservationId = obsByPath.get(record.destinationSession)?.id;
-		pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType: record.mode === "branch" ? "branch" : "relocation", timestamp: record.ts, sourceObservationId, targetObservationId, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", provenance: "pi-relocate-manifest", metadata: { manifestIndex: index, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode: record.mode ?? "move", batchId: record.batchId } });
-		if (record.batchId) pushUnique(store.batchOperations, seen.batches, { id: record.batchId, operationType: "bucket_relocation", sourcePath: record.fromCwd, destinationPath: record.toCwd, timestamp: record.ts, source: "pi-relocate", status: "applied", metadata: { mode: record.mode ?? "move" } });
-		if ((record.mode ?? "move") === "move" && sourceObservationId && targetObservationId) {
-			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "superseded", targetObservationId, record.ts), observationId: sourceObservationId, markType: "superseded", reason: "relocated by pi-relocate move semantics", replacementObservationId: targetObservationId, source: "pi-relocate-manifest", timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId } });
-			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "deletion_candidate", targetObservationId, record.ts), observationId: sourceObservationId, markType: "deletion_candidate", reason: "old copy after relocation; requires manual review before deletion", replacementObservationId: targetObservationId, source: "pi-relocate-manifest", timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId } });
+		const edgeType = operationType === "repo_move" ? "repo_move" : mode === "branch" || mode === "diverge" ? "branch" : "relocation";
+		const manifestMetadata = { manifestIndex: index, fromCwd: record.fromCwd, toCwd: record.toCwd, replacements: record.replacements, parent: record.parent, sourceSessionId: record.sourceSessionId, destinationSessionId: record.destinationSessionId, mode, operationType, tool, sourceRepo, targetRepo, batchId: record.batchId };
+		pushUnique(store.edges, seen.edges, { id: edgeId, sourceSessionId: source.id, targetSessionId: target.id, edgeType, timestamp: record.ts, sourceObservationId, targetObservationId, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", provenance: `${tool}-manifest`, metadata: manifestMetadata });
+		if (record.batchId) pushUnique(store.batchOperations, seen.batches, { id: record.batchId, operationType, sourcePath: record.fromCwd, destinationPath: record.toCwd, timestamp: record.ts, source: tool, status: "applied", metadata: { mode, operationType, tool, sourceRepo, targetRepo } });
+		if (operationType === "repo_move") {
+			pushUnique(store.repoEvents, seen.repoEvents, { id: id("repo_event", operationType, record.ts, sourceRepo ?? record.fromCwd, targetRepo ?? record.toCwd, record.sourceSession, record.destinationSession), eventType: "move", fromPath: sourceRepo ?? record.fromCwd, toPath: targetRepo ?? record.toCwd, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", source: tool, manualReviewRequired: false, summary: `Repo moved: ${sourceRepo ?? record.fromCwd} -> ${targetRepo ?? record.toCwd}`, metadata: manifestMetadata });
+		}
+		if (mode === "move" && sourceObservationId && targetObservationId) {
+			const reason = operationType === "repo_move" ? "relocated by repo move semantics" : "relocated by pi-relocate move semantics";
+			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "superseded", targetObservationId, record.ts), observationId: sourceObservationId, markType: "superseded", reason, replacementObservationId: targetObservationId, source: `${tool}-manifest`, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId, operationType, tool, sourceRepo, targetRepo } });
+			pushUnique(store.observationMarks, seen.marks, { id: id("mark", sourceObservationId, "deletion_candidate", targetObservationId, record.ts), observationId: sourceObservationId, markType: "deletion_candidate", reason: "old copy after relocation; requires manual review before deletion", replacementObservationId: targetObservationId, source: `${tool}-manifest`, timestamp: record.ts, confidence: record.inferred ? (record.confidence ?? "medium") : "authoritative", manualReviewRequired: true, metadata: { batchId: record.batchId, operationType, tool, sourceRepo, targetRepo } });
 		}
 		for (const [type, value, targetId] of [["cwd", record.fromCwd, source.id], ["cwd", record.toCwd, target.id]] as const) if (value && !value.startsWith("(")) pushUnique(store.labels, seen.labels, { id: id("label", edgeId, type, targetId, value), targetType: "session", targetId, labelType: type, value, confidence: "authoritative", sourceId: manifestSource });
 	});

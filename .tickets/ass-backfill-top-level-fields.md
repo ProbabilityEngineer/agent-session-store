@@ -1,6 +1,6 @@
 ---
 id: ass-backfill-top-level-fields
-status: open
+status: closed
 type: task
 priority: 1
 created: 2026-06-01T00:00:00Z
