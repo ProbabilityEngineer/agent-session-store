@@ -30,3 +30,16 @@ Document and execute gradual naming alignment for related Pi session tools.
 ## Boundary note
 
 `agent-session-store` remains the provider-neutral core. `pi-session-store` should be the Pi-facing wrapper. `pi-session-graph` should render prepared exports. `pi-session-relocate` records session relocation/fork facts; `pi-session-repo-move` handles filesystem repo moves.
+
+## Slash command policy
+
+The suite should reduce top-level command clutter by using namespaced commands:
+
+```text
+/session-store ...
+/session-graph ...
+/session-relocate ...
+/session-repo ...
+```
+
+Existing legacy commands can remain aliases during migration, but docs should present the namespaced form first.

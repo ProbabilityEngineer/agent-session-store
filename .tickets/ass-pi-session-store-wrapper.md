@@ -16,6 +16,20 @@ Expose common `agent-session-store` workflows inside Pi under the suite naming c
 ## Acceptance Criteria
 
 - New/companion package `pi-session-store` exists.
-- Provides lightweight slash commands for store status, rebuild/export, repo scan, provider import summary, and reports.
+- Provides one lightweight namespaced slash command, e.g. `/session-store ...`, with subcommands for status, rebuild/export, repo scan, provider import summary, and reports.
 - Calls CLI/scripts rather than duplicating heavy import logic.
 - Documents relationship: provider-neutral core is `agent-session-store`; Pi UX wrapper is `pi-session-store`.
+
+## Slash command policy
+
+Avoid many top-level store slash commands. Prefer one namespace:
+
+```text
+/session-store status
+/session-store rebuild
+/session-store export-graph
+/session-store repo-identities
+/session-store reports
+```
+
+Heavy data work should call the `agent-session-store` CLI/scripts underneath rather than duplicating logic in the Pi extension.
