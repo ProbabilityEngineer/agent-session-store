@@ -1,6 +1,6 @@
 ---
 id: ass-pi-session-store-wrapper
-status: open
+status: closed
 deps: [ass-cli-productization]
 links:
   - ../pi-session-store
@@ -33,3 +33,8 @@ Avoid many top-level store slash commands. Prefer one namespace:
 ```
 
 Heavy data work should call the `agent-session-store` CLI/scripts underneath rather than duplicating logic in the Pi extension.
+
+
+## Closure
+
+Bootstrapped companion `/Users/sam/git/agents/pi-session-store` package with `/session-store ...` command wrapper over the `agent-session-store` CLI. Added `agent-session-store status` to support wrapper status output. The wrapper delegates build/export/repo/report workflows to core scripts and documents the namespace/boundary. Validated `npm run lint` in both repos.
