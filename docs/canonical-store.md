@@ -531,8 +531,17 @@ Add derived marks for raw session observations:
 - `superseded`
 - `archived`
 - `deletion_candidate`
+- `preserve` / `intentional_branch` from `~/.pi/agent/session-store/observation-marks.jsonl` for curated branches that should not be treated as prune candidates.
 
 Marks need provenance, timestamp, reason, confidence, replacement observation/session when known, and a manual-review requirement. Tools may report deletion candidates, but must not delete raw sessions by default.
+
+Curated preserve mark sidecar example:
+
+```jsonl
+{"kind":"observation-mark","markType":"preserve","path":"/Users/sam/.pi/agent/sessions/.../session.jsonl","label":"Ariadne branch","reason":"Preserve identity/continuity context retained in this branch","timestamp":"2026-06-01T00:00:00Z","confidence":"manual","source":"manual-curation"}
+```
+
+The sidecar is imported into `observation_marks`; graph exports expose both `observationMarks` and `preservedBranches`.
 
 ## Deterministic relationship rules
 

@@ -22,6 +22,7 @@ const prefixLineagePath = join(graphDir, "prefix-lineage.json");
 const inventoryPath = join(graphDir, "temporal-inventory.json");
 const bucketReconciliationPath = join(storeDir, "session-bucket-reconciliation.json");
 const repoIdentitySidecarPath = join(storeDir, "repo-identities.jsonl");
+const observationMarksSidecarPath = join(storeDir, "observation-marks.jsonl");
 const checkpointCandidatePaths = [
 	join(storeDir, "store-verification.md"),
 	join(storeDir, "backup-readiness.md"),
@@ -116,6 +117,7 @@ type RepoObservation = { id: string; repoIdentityId: string; path?: string; buck
 type RepoEvent = { id: string; eventType: "rename" | "move" | "swap" | "fork" | "archive" | "superseded_by" | "alias" | string; repoIdentityId?: string; relatedRepoIdentityId?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence: string; source: string; evidenceId?: string; manualReviewRequired: boolean; summary?: string; metadata?: Json };
 type Seen = { sources: Set<string>; sessions: Set<string>; obs: Set<string>; edges: Set<string>; labels: Set<string>; aliases: Set<string>; classes: Set<string>; evidence: Set<string>; backups: Set<string>; repos: Set<string>; artifacts: Set<string>; marks: Set<string>; batches: Set<string>; repoIdentities: Set<string>; repoObservations: Set<string>; repoEvents: Set<string> };
 type RepoIdentitySidecar = { kind: "repo-identity"; id?: string; stableName: string; displayName?: string; description?: string; confidence?: string; metadata?: Json } | { kind: "repo-observation"; repoIdentityId?: string; stableName?: string; path?: string; bucket?: string; remoteUrl?: string; validFrom?: string; validTo?: string; confidence?: string; evidence?: string; metadata?: Json } | { kind: "repo-event"; eventType: string; repoIdentityId?: string; stableName?: string; relatedRepoIdentityId?: string; relatedStableName?: string; fromPath?: string; toPath?: string; timestamp?: string; confidence?: string; summary?: string; evidence?: string; manualReviewRequired?: boolean; metadata?: Json };
+type ObservationMarkSidecar = { kind: "observation-mark"; markType: "preserve" | "intentional_branch" | string; path?: string; sessionId?: string; observationId?: string; label?: string; reason?: string; timestamp?: string; confidence?: string; source?: string; replacementObservationId?: string; manualReviewRequired?: boolean; metadata?: Json };
 
 function sha(text: string) { return createHash("sha256").update(text).digest("hex"); }
 function id(prefix: string, ...parts: (string | undefined)[]) { return `${prefix}_${sha(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`; }
@@ -505,8 +507,10 @@ function deriveResumeTargets(store: Store) {
 	for (const thread of store.logicalThreads) {
 		const members = membersByThread.get(thread.id) ?? [];
 		const leaves = members.filter((member) => !outgoing.has(member.sessionId));
-		const activeLeaves = leaves.filter((member) => !(member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate")));
-		const recoverable = leaves.filter((member) => member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate"));
+		const isPreserved = (member: ThreadMember) => Boolean(member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "preserve" || mark.markType === "intentional_branch"));
+		const isDeletionMarked = (member: ThreadMember) => Boolean(member.observationId && (marksByObservation.get(member.observationId) ?? []).some((mark) => mark.markType === "superseded" || mark.markType === "deletion_candidate"));
+		const activeLeaves = leaves.filter((member) => isPreserved(member) || !isDeletionMarked(member));
+		const recoverable = leaves.filter((member) => !isPreserved(member) && isDeletionMarked(member));
 		const activeLeafSessionIds = activeLeaves.map((member) => member.sessionId);
 		const recoverableSessionIds = recoverable.map((member) => member.sessionId);
 		let status: string;
@@ -517,7 +521,7 @@ function deriveResumeTargets(store: Store) {
 		else if (recoverableSessionIds.length) { status = "recoverable-only"; recommendedSessionId = latest(recoverableSessionIds); reasons.push("no-active-leaves", "latest-recoverable-leaf"); }
 		else { status = "no-target"; reasons.push("no-leaf-members"); }
 		const recommendedObservationId = members.find((member) => member.sessionId === recommendedSessionId)?.observationId;
-		store.threadResumeTargets.push({ id: id("resume", thread.id), threadId: thread.id, status, recommendedSessionId, recommendedObservationId, activeLeafSessionIds, recoverableSessionIds, reasons, metadata: { leafCount: leaves.length } });
+		store.threadResumeTargets.push({ id: id("resume", thread.id), threadId: thread.id, status, recommendedSessionId, recommendedObservationId, activeLeafSessionIds, recoverableSessionIds, reasons, metadata: { leafCount: leaves.length, preservedLeafCount: leaves.filter(isPreserved).length } });
 	}
 }
 
@@ -621,8 +625,9 @@ async function main() {
 	const inventory = await readJson<Json>(inventoryPath);
 	const bucketReconciliation = await readJson<{ buckets?: (Json & { root?: string; bucket?: string; decodedPath?: string; status?: string; confidence?: string; sessionCount?: number; earliest?: string; latest?: string; reasons?: string[] })[] }>(bucketReconciliationPath);
 	const repoIdentitySidecar = await readJsonl<RepoIdentitySidecar>(repoIdentitySidecarPath);
+	const observationMarkSidecar = await readJsonl<ObservationMarkSidecar>(observationMarksSidecarPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>(), repoIdentities: new Set<string>(), repoObservations: new Set<string>(), repoEvents: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
@@ -633,6 +638,7 @@ async function main() {
 	const oldRepoSource = addSource("git-repository", "repository_collection", oldExtensionsDir, "Old extension repositories");
 	const bucketReconciliationSource = addSource("manual-curation", "bucket_reconciliation", bucketReconciliationPath, "Session bucket reconciliation");
 	const repoIdentitySource = addSource("manual-curation", "repo_identity_sidecar", repoIdentitySidecarPath, "Repo identity sidecar");
+	const observationMarkSource = addSource("manual-curation", "observation_mark_sidecar", observationMarksSidecarPath, "Observation mark sidecar");
 	store.importRuns.push({ id: id("run", generatedAt, "build-curated-store"), sourceId: liveSource, startedAt: generatedAt, finishedAt: generatedAt, tool: "scripts/build-curated-store.ts", status: "ok", stats: { manifestRecords: manifest.length, overlayRecords: overlays.length } });
 
 	debug("collecting live session paths");
@@ -662,6 +668,18 @@ async function main() {
 	}
 
 	debug("deriving relocation manifest edges");
+	for (const record of observationMarkSidecar) {
+		const observation = record.observationId ? store.sessionObservations.find((obs) => obs.id === record.observationId) : record.path ? obsByPath.get(record.path) : record.sessionId ? store.sessionObservations.find((obs) => obs.sessionId === record.sessionId || obs.providerSessionId === record.sessionId) : undefined;
+		if (!observation) {
+			pushUnique(store.evidence, seen.evidence, { id: id("evidence", "observation-mark-unmatched", record.path, record.sessionId, record.observationId, record.markType), kind: "observation_mark_unmatched", sourceId: observationMarkSource, timestamp: record.timestamp ?? generatedAt, confidence: record.confidence ?? "low", summary: `Unmatched observation mark: ${record.markType}`, data: { ...record } });
+			continue;
+		}
+		const markType = record.markType === "intentional_branch" ? "preserve" : record.markType;
+		pushUnique(store.observationMarks, seen.marks, { id: id("mark", "sidecar", observation.id, markType, record.label, record.timestamp), observationId: observation.id, markType, reason: record.reason ?? record.label, replacementObservationId: record.replacementObservationId, source: record.source ?? "observation-marks.jsonl", timestamp: record.timestamp ?? generatedAt, confidence: record.confidence ?? "manual", manualReviewRequired: record.manualReviewRequired ?? false, metadata: { label: record.label, sidecarMarkType: record.markType, ...record.metadata } });
+		if (record.label) pushUnique(store.labels, seen.labels, { id: id("label", "observation-mark", observation.sessionId, record.label), targetType: "session", targetId: observation.sessionId, labelType: markType === "preserve" ? "preserved_branch" : markType, value: record.label, confidence: record.confidence ?? "manual", sourceId: observationMarkSource, metadata: { observationId: observation.id, reason: record.reason } });
+	}
+	if (observationMarkSidecar.length) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", observationMarksSidecarPath), kind: "observation_mark_sidecar", path: observationMarksSidecarPath, generatedAt, generator: "manual-curated-sidecar", metadata: { imported: true, recordCount: observationMarkSidecar.length } });
+
 	manifest.forEach((record, index) => {
 		const source = sessionByPath.get(record.sourceSession);
 		const target = sessionByPath.get(record.destinationSession);
