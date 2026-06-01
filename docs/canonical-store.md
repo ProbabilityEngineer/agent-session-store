@@ -128,7 +128,7 @@ Every non-raw fact should have provenance and confidence.
 
 Suggested confidence values:
 
-- `authoritative`: direct provider manifest/runtime event, e.g. post-manifest `pi-relocate`
+- `authoritative`: direct provider manifest/runtime event, e.g. post-manifest `pi-session-move`
 - `high`: backup/session/filesystem evidence corroborates the fact
 - `medium`: inferred from filename chains or content prefix evidence
 - `low`: forensic or ambiguous signal
