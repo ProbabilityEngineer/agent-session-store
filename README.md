@@ -92,7 +92,7 @@ Events are interpretation/evidence layers; raw sessions and relocation manifests
 - `agent-session-store`: provider-neutral canonical store, imports, reconstruction, repo identity, reports, and graph-ready exports.
 - `pi-session-store`: planned Pi-facing wrapper around common store workflows via one namespaced `/session-store ...` command.
 - `pi-session-relocate`: planned session relocation/continuation extension; compatibility aliases may remain in `pi-relocate` during migration.
-- `pi-session-repo-move`: planned filesystem repo move extension for actual repo moves.
+- `pi-repo-move`: filesystem repo move extension for actual repo moves (`/repo-move <target>`).
 - `pi-session-graph`: renderer/viewer over prepared JSON exports; it should not duplicate canonical inference.
 
 Preferred future Pi slash-command namespaces:

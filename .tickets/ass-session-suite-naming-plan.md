@@ -17,7 +17,7 @@ Document and execute gradual naming alignment for related Pi session tools.
 - `agent-session-store` — provider-neutral CLI/core
 - `pi-session-store` — Pi-facing store wrapper
 - `pi-session-relocate` — session relocation/continuation extension
-- `pi-session-repo-move` — actual repo move extension
+- `pi-repo-move` — actual repo move extension
 - `pi-session-graph` — viewer/graph extension
 
 ## Acceptance Criteria
@@ -29,7 +29,7 @@ Document and execute gradual naming alignment for related Pi session tools.
 
 ## Boundary note
 
-`agent-session-store` remains the provider-neutral core. `pi-session-store` should be the Pi-facing wrapper. `pi-session-graph` should render prepared exports. `pi-session-relocate` records session relocation/fork facts; `pi-session-repo-move` handles filesystem repo moves.
+`agent-session-store` remains the provider-neutral core. `pi-session-store` should be the Pi-facing wrapper. `pi-session-graph` should render prepared exports. `pi-session-relocate` records session relocation/fork facts; `pi-repo-move` handles filesystem repo moves.
 
 ## Slash command policy
 

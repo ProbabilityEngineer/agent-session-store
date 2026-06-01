@@ -5,14 +5,14 @@ type: feature
 priority: 1
 created: 2026-06-01T00:00:00Z
 ---
-# Import top-level pi-move repo move manifest fields
+# Import top-level pi-repo-move repo move manifest fields
 
-`pi-move` emits relocation manifest records with first-class repo move fields:
+`pi-repo-move` emits relocation manifest records with first-class repo move fields:
 
 ```json
 {
   "operationType": "repo_move",
-  "tool": "pi-move",
+  "tool": "pi-repo-move",
   "sourceRepo": "/old/repo",
   "targetRepo": "/new/repo"
 }
