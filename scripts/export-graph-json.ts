@@ -34,8 +34,40 @@ try {
 	const repoIdentities = db.prepare("SELECT id, stable_name, display_name, description, confidence, source, metadata_json FROM repo_identities ORDER BY stable_name").all().map((row: any) => ({ id: row.id, stableName: row.stable_name, displayName: row.display_name, description: row.description, confidence: row.confidence, source: row.source, metadata: parseJson(row.metadata_json, {}) }));
 	const repoObservations = db.prepare("SELECT id, repo_identity_id, path, bucket, remote_url, valid_from, valid_to, confidence, source, evidence_id, metadata_json FROM repo_observations ORDER BY id").all().map((row: any) => ({ id: row.id, repoIdentityId: row.repo_identity_id, path: row.path, bucket: row.bucket, remoteUrl: row.remote_url, validFrom: row.valid_from, validTo: row.valid_to, confidence: row.confidence, source: row.source, evidenceId: row.evidence_id, metadata: parseJson(row.metadata_json, {}) }));
 	const repoEvents = db.prepare("SELECT id, event_type, repo_identity_id, related_repo_identity_id, from_path, to_path, timestamp, confidence, source, evidence_id, manual_review_required, summary, metadata_json FROM repo_events ORDER BY id").all().map((row: any) => ({ id: row.id, eventType: row.event_type, repoIdentityId: row.repo_identity_id, relatedRepoIdentityId: row.related_repo_identity_id, fromPath: row.from_path, toPath: row.to_path, timestamp: row.timestamp, confidence: row.confidence, source: row.source, evidenceId: row.evidence_id, manualReviewRequired: Boolean(row.manual_review_required), summary: row.summary, metadata: parseJson(row.metadata_json, {}) }));
+	const workBursts = db.prepare("SELECT id, kind, path, generated_at, generator, metadata_json FROM artifacts WHERE kind = 'temporal_work_burst' ORDER BY generated_at, id").all().map((row: any) => {
+		const metadata = parseJson<Record<string, any>>(row.metadata_json, {});
+		return { id: row.id, kind: row.kind, path: row.path, generatedAt: row.generated_at, generator: row.generator, repoIdentityId: metadata.repoIdentityId, sessionIds: metadata.sessionIds ?? [], providers: metadata.providers ?? [], start: metadata.start, end: metadata.end, sessionCount: metadata.sessionCount ?? 0, confidence: "derived", provenance: row.generator, metadata };
+	});
+	const temporalActivitySpans = sessions.flatMap((session: any) => {
+		const start = session.startTimestamp ?? session.firstSeenAt;
+		const end = session.endTimestamp ?? session.lastSeenAt ?? start;
+		if (!start) return [];
+		const eventCounts = typeof session.metadata?.eventCounts === "object" && session.metadata.eventCounts ? session.metadata.eventCounts as Record<string, number> : {};
+		const eventCount = Object.values(eventCounts).reduce((sum, value) => sum + (typeof value === "number" ? value : 0), 0) || undefined;
+		const toolCount = Object.entries(eventCounts).filter(([key]) => /tool|command|exec|edit|write|read|patch/i.test(key)).reduce((sum, [, value]) => sum + (typeof value === "number" ? value : 0), 0) || undefined;
+		const messageCount = typeof session.metadata?.messageCount === "number" ? session.metadata.messageCount : eventCounts.message;
+		const activityScore = (eventCount ?? 0) + (toolCount ?? 0) + (messageCount ?? 0);
+		return [{ id: `span_${session.id}`, sessionId: session.id, provider: session.provider, providerSessionId: session.providerSessionId, repoIdentityId: session.metadata?.repoIdentityId, cwd: session.metadata?.cwd, label: session.metadata?.displayName ?? session.metadata?.cwd ?? session.providerSessionId ?? session.id, start, end, lineCount: session.lineCount, byteCount: session.byteCount, eventCount, messageCount, toolCount, activityScore, confidence: "derived", provenance: "session-metadata" }];
+	});
+	const activityMetricMap = new Map<string, any>();
+	for (const span of temporalActivitySpans) {
+		const key = [span.provider, span.repoIdentityId ?? span.cwd ?? "unknown"].join("::");
+		const metric = activityMetricMap.get(key) ?? { id: `activity_${activityMetricMap.size + 1}`, provider: span.provider, repoIdentityId: span.repoIdentityId, cwd: span.cwd, sessionCount: 0, eventCount: 0, messageCount: 0, toolCount: 0, lineCount: 0, byteCount: 0, activityScore: 0, firstStart: span.start, lastEnd: span.end, confidence: "derived", provenance: "session-metadata-aggregate", missingDataNotes: [] as string[] };
+		metric.sessionCount += 1;
+		metric.eventCount += span.eventCount ?? 0;
+		metric.messageCount += span.messageCount ?? 0;
+		metric.toolCount += span.toolCount ?? 0;
+		metric.lineCount += span.lineCount ?? 0;
+		metric.byteCount += span.byteCount ?? 0;
+		metric.activityScore += span.activityScore ?? 0;
+		if (span.start < metric.firstStart) metric.firstStart = span.start;
+		if (span.end > metric.lastEnd) metric.lastEnd = span.end;
+		if (span.eventCount === undefined) metric.missingDataNotes.push(`event counts missing for ${span.sessionId}`);
+		activityMetricMap.set(key, metric);
+	}
+	const activityMetrics = [...activityMetricMap.values()];
 	const graphFilters = { excludedNoiseSessions: allSessions.length - sessions.length, policy: "exclude trivial/test sessions without lineage edges from graph exports; keep them in canonical SQLite/export store" };
-	const payload = { generatedAt: new Date().toISOString(), source: dbPath, graphFilters, sessions, edges, labels, classifications, logicalThreads, threadMembers, threadEdges, threadResumeTargets, repoIdentities, repoObservations, repoEvents };
+	const payload = { generatedAt: new Date().toISOString(), source: dbPath, graphFilters, sessions, edges, labels, classifications, logicalThreads, threadMembers, threadEdges, threadResumeTargets, repoIdentities, repoObservations, repoEvents, workBursts, temporalActivitySpans, activityMetrics };
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(payload, null, 2) + "\n";

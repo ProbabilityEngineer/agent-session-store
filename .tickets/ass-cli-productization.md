@@ -1,6 +1,6 @@
 ---
 id: ass-cli-productization
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T15:10:00Z
@@ -24,3 +24,8 @@ Turn the canonical store tooling into a usable provider-neutral CLI for indexing
 ## Boundary note
 
 The CLI should own canonical data preparation/export commands. Visualization commands may live in `pi-session-graph`; this package should expose graph-ready data contracts rather than HTML/SVG rendering.
+
+
+## Closure
+
+Added a documented `agent-session-store` bin entrypoint that wraps existing scripts for build, graph export, repo scan/report, inventory, temporal lineage, logical threads, and verification-style reports.

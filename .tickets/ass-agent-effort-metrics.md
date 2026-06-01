@@ -1,6 +1,6 @@
 ---
 id: ass-agent-effort-metrics
-status: open
+status: closed
 deps: [ass-provider-activity-summaries, ass-graph-export-contract]
 links:
   - ../pi-session-graph/.tickets/psg-agent-accrued-effort-lanes.md
@@ -20,3 +20,8 @@ Compute privacy-preserving activity metrics that renderers can show across repo 
 - Distinguish wall-clock span from accrued activity.
 - Include provenance and missing-data notes per provider.
 - Do not store raw transcript text by default.
+
+
+## Closure
+
+Exported privacy-preserving `activityMetrics` aggregates by provider and repo identity/cwd, with session/event/message/tool/line/byte counts and activity score where metadata supports it.

@@ -1,6 +1,6 @@
 ---
 id: ass-temporal-axis-data
-status: open
+status: closed
 deps: [ass-graph-export-contract]
 links:
   - ../pi-session-graph/.tickets/psg-canonical-temporal-html.md
@@ -21,3 +21,8 @@ Export temporal data needed by graph renderers without embedding presentation de
 - Export temporal work burst records derived from canonical sessions/repo identity.
 - Do not generate SVG/HTML here; rendering belongs in `pi-session-graph`.
 - Do not parse raw transcript content for visual-only needs.
+
+
+## Closure
+
+Exported renderer-ready `temporalActivitySpans` derived from canonical session metadata and `workBursts` from temporal work-burst artifacts. Renderers can compute compressed time axes from these prepared spans.

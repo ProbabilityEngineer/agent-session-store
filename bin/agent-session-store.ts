@@ -1,0 +1,36 @@
+#!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = join(here, "..");
+const command = process.argv[2] ?? "help";
+const rest = process.argv.slice(3);
+
+const scripts: Record<string, string[]> = {
+	build: ["scripts/build-curated-store.ts"],
+	"build-store": ["scripts/build-curated-store.ts"],
+	"export-graph": ["scripts/export-graph-json.ts"],
+	"scan-repos": ["scripts/scan-repo-identities.ts"],
+	"repo-identities": ["scripts/repo-identity-report.ts"],
+	"backup-readiness": ["scripts/backup-readiness-report.ts"],
+	"inventory-buckets": ["scripts/inventory-session-buckets.ts"],
+	"logical-threads": ["scripts/logical-thread-report.ts"],
+	"temporal-lineage": ["scripts/build-temporal-lineage.ts"],
+	"validate-timeline": ["scripts/validate-session-timeline.ts"],
+};
+
+if (command === "help" || command === "--help" || command === "-h") {
+	console.log(`agent-session-store commands:\n\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nExamples:\n  agent-session-store build\n  agent-session-store export-graph\n  agent-session-store scan-repos\n`);
+	process.exit(0);
+}
+
+const script = scripts[command];
+if (!script) {
+	console.error(`Unknown command: ${command}. Run agent-session-store help.`);
+	process.exit(2);
+}
+
+const result = spawnSync("tsx", [...script, ...rest], { cwd: root, stdio: "inherit", env: process.env });
+process.exit(result.status ?? 1);

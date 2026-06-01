@@ -1,6 +1,6 @@
 ---
 id: ass-graph-export-contract
-status: open
+status: closed
 deps: []
 links:
   - ../pi-session-graph/.tickets/psg-store-graph-boundary.md
@@ -20,3 +20,8 @@ Define the canonical graph export contract consumed by `pi-session-graph` and fu
 - Preserve backward compatibility for current `graph-export.json`/`curated-store.json` consumers.
 - Provide sample export snippets for session lineage, compaction/fork edges, repo identity, temporal spans, and activity metrics.
 - Make clear that canonical inference happens here; renderers should not parse raw transcripts or infer identity.
+
+
+## Closure
+
+Documented the graph export contract in `docs/graph-export-contract.md` and extended `graph-export.json`/`curated-store.json` with additive `workBursts`, `temporalActivitySpans`, and `activityMetrics` arrays while preserving existing fields.

@@ -15,6 +15,18 @@ git:github.com/ProbabilityEngineer/agent-session-store
 - Store metadata, hashes, timestamps, labels, counts, and evidence by default, not raw transcript content.
 - Treat cwd/path/bucket as observations, not durable project identity.
 
+## CLI
+
+```bash
+agent-session-store build
+agent-session-store export-graph
+agent-session-store scan-repos
+agent-session-store repo-identities
+agent-session-store backup-readiness
+```
+
+The CLI wraps the existing scripts and keeps canonical data preparation separate from graph rendering.
+
 ## Main scripts
 
 ```bash

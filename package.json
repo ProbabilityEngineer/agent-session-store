@@ -31,5 +31,8 @@
     "@types/node": "latest",
     "tsx": "^4.22.3",
     "typescript": "latest"
+  },
+  "bin": {
+    "agent-session-store": "./bin/agent-session-store.ts"
   }
 }
