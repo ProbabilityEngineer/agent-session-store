@@ -87,11 +87,24 @@ The store imports these into:
 
 Events are interpretation/evidence layers; raw sessions and relocation manifests remain unchanged.
 
-## Relationship to other repos
+## Pi session suite relationship
 
-- `pi-relocate`: producer of relocation/session observations and prune/replay helpers.
-- `agent-session-store`: canonical store, imports, reconstruction, repo identity, reports.
-- `pi-session-graph`: lightweight viewer over prepared JSON exports.
+- `agent-session-store`: provider-neutral canonical store, imports, reconstruction, repo identity, reports, and graph-ready exports.
+- `pi-session-store`: planned Pi-facing wrapper around common store workflows via one namespaced `/session-store ...` command.
+- `pi-session-relocate`: planned session relocation/continuation extension; compatibility aliases may remain in `pi-relocate` during migration.
+- `pi-session-repo-move`: planned filesystem repo move extension for actual repo moves.
+- `pi-session-graph`: renderer/viewer over prepared JSON exports; it should not duplicate canonical inference.
+
+Preferred future Pi slash-command namespaces:
+
+```text
+/session-store ...
+/session-graph ...
+/session-relocate ...
+/session-repo ...
+```
+
+Compatibility aliases should be preserved during migration rather than broken abruptly.
 
 ## Development
 

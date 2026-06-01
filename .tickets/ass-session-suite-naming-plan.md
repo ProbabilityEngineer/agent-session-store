@@ -1,6 +1,6 @@
 ---
 id: ass-session-suite-naming-plan
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-05-31T15:10:00Z
@@ -43,3 +43,8 @@ The suite should reduce top-level command clutter by using namespaced commands:
 ```
 
 Existing legacy commands can remain aliases during migration, but docs should present the namespaced form first.
+
+
+## Closure
+
+README now documents the suite split, planned wrapper names, compatibility-alias policy, and preferred namespaced slash commands. Implementation follow-through remains tracked in package-specific wrapper/router tickets.

@@ -26,3 +26,8 @@ Unify historical cwd/path labels for the Check Your Photos/CYP workstream so rep
 - Sessions across Pi, Codex, and oh-my-pi map to the same project/repo identity where evidence supports it.
 - Graph exports expose display label `Check Your Photos / CYP`.
 - Do not rewrite raw session JSONLs.
+
+
+## Progress
+
+Added manual repo identity sidecar records under `~/.pi/agent/session-store/repo-identities.jsonl` for `project:check-your-photos-cyp` with display label `Check Your Photos / CYP` and historical alias observations. Full validation is still open because `npm run build-store` timed out and needs investigation before closing.
