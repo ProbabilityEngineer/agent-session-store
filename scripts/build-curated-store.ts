@@ -806,7 +806,7 @@ async function main() {
 		}
 	}
 	if (prefixLineage) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "prefix-lineage", prefixLineagePath), kind: "prefix_match", sourceId: prefixSource, confidence: "medium", summary: "Prefix lineage report imported as evidence", data: { generatedAt: prefixLineage.generatedAt } });
-	if (inventory) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", inventoryPath), kind: "inventory", path: inventoryPath, generatedAt, generator: "scripts/build-temporal-lineage.ts", metadata: { imported: true } });
+	if (inventory) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", inventoryPath), kind: "inventory", path: inventoryPath, generatedAt, generator: "scripts/build-graphs.ts", metadata: { imported: true } });
 	if (preManifest) store.checkpointArtifacts.push({ id: id("checkpoint", preManifestPath), kind: "curated_reconstruction_summary", path: preManifestPath, generatedAt, generator: "manual-curated-sidecar", inputHash: sha(JSON.stringify(preManifest)), privacyStatus: "metadata-only", summary: "Pre-manifest lineage curated reconstruction summary", metadata: { source: preManifestPath } });
 	if (prefixLineage) store.checkpointArtifacts.push({ id: id("checkpoint", prefixLineagePath), kind: "prefix_lineage_summary", path: prefixLineagePath, generatedAt, generator: "scripts/reconstruct-prefix-lineage.ts", inputHash: sha(JSON.stringify(prefixLineage)), privacyStatus: "metadata-only", summary: "Prefix/common-prefix lineage reconstruction summary", metadata: { source: prefixLineagePath } });
 	for (const path of checkpointCandidatePaths) {

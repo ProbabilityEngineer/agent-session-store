@@ -42,7 +42,7 @@ npm run reconstruct          # local history reconstruction
 npm run validate-timeline    # timeline validation
 npm run index-segments       # metadata-only session segment index
 npm run prefix-lineage       # prefix/common-prefix lineage reconstruction
-npm run temporal-lineage     # Mermaid lineage/timeline reports: lineage-full, lineage-focused, timeline-projects, timeline-sessions
+npm run build-graphs         # Mermaid graph reports: lineage-full, lineage-focused, timeline-projects, timeline-sessions
 npm run temporal-lineage-svg # SVG lineage graph, no Mermaid size limit
 npm run lint                 # TypeScript check
 ```
@@ -62,7 +62,7 @@ npm run lint                 # TypeScript check
 
 SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
 
-`npm run temporal-lineage` writes four named graph reports under `~/.pi/agent/session-graph/`:
+`npm run build-graphs` writes four named graph reports under `~/.pi/agent/session-graph/`:
 
 | File | Previous name | Meaning |
 |---|---|---|

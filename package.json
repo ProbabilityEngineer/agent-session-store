@@ -9,7 +9,6 @@
     "validate-timeline": "tsx scripts/validate-session-timeline.ts",
     "index-segments": "tsx scripts/index-session-segments.ts",
     "prefix-lineage": "tsx scripts/reconstruct-prefix-lineage.ts",
-    "temporal-lineage": "tsx scripts/build-temporal-lineage.ts",
     "build-store": "tsx scripts/build-curated-store.ts",
     "backup-readiness": "tsx scripts/backup-readiness-report.ts",
     "inventory-buckets": "tsx scripts/inventory-session-buckets.ts",
@@ -18,7 +17,8 @@
     "repo-identities": "tsx scripts/repo-identity-report.ts",
     "scan-repos": "tsx scripts/scan-repo-identities.ts",
     "enrich-github-repos": "tsx scripts/enrich-github-repos.ts",
-    "temporal-lineage-svg": "tsx scripts/build-temporal-lineage-svg.ts"
+    "temporal-lineage-svg": "tsx scripts/build-temporal-lineage-svg.ts",
+    "build-graphs": "tsx scripts/build-graphs.ts"
   },
   "keywords": [
     "agent",
