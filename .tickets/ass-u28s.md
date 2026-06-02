@@ -1,6 +1,6 @@
 ---
 id: ass-u28s
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-06-02T18:29:42Z

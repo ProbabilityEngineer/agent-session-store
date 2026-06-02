@@ -17,6 +17,12 @@ git:github.com/ProbabilityEngineer/agent-session-store
 
 ## CLI
 
+The package ships committed built JavaScript under `dist/`. The npm/global executable is installed as:
+
+```text
+$(npm prefix -g)/bin/agent-session-store
+```
+
 ```bash
 agent-session-store build
 agent-session-store export-graph
@@ -25,7 +31,7 @@ agent-session-store repo-identities
 agent-session-store backup-readiness
 ```
 
-The CLI wraps the existing scripts and keeps canonical data preparation separate from graph rendering.
+The CLI runs the built `dist/scripts/*.js` commands and keeps canonical data preparation separate from graph rendering. `pi-session-graph` can depend on this package as its canonical store/export backend, while graph rendering remains in the graph package.
 
 ## Delayed install after pi-session-move
 

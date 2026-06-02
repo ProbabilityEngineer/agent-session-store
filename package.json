@@ -1,9 +1,21 @@
 {
   "name": "agent-session-store",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Canonical store and import/reconstruction tooling for agent session lineage.",
   "type": "module",
+  "main": "dist/bin/agent-session-store.js",
+  "types": "dist/bin/agent-session-store.d.ts",
+  "bin": {
+    "agent-session-store": "dist/bin/agent-session-store.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "tsconfig.json"
+  ],
   "scripts": {
+    "build": "tsc --project tsconfig.json",
     "lint": "tsc --noEmit",
     "reconstruct": "tsx scripts/reconstruct-local-history.ts",
     "validate-timeline": "tsx scripts/validate-session-timeline.ts",
@@ -31,8 +43,5 @@
     "@types/node": "latest",
     "tsx": "^4.22.3",
     "typescript": "latest"
-  },
-  "bin": {
-    "agent-session-store": "./bin/agent-session-store.ts"
   }
 }

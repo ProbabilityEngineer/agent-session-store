@@ -16,16 +16,16 @@ const artifactPaths = [
 ];
 
 const scripts: Record<string, string[]> = {
-	build: ["scripts/build-curated-store.ts"],
-	"build-store": ["scripts/build-curated-store.ts"],
-	"export-graph": ["scripts/export-graph-json.ts"],
-	"scan-repos": ["scripts/scan-repo-identities.ts"],
-	"repo-identities": ["scripts/repo-identity-report.ts"],
-	"backup-readiness": ["scripts/backup-readiness-report.ts"],
-	"inventory-buckets": ["scripts/inventory-session-buckets.ts"],
-	"logical-threads": ["scripts/logical-thread-report.ts"],
-	"build-graphs": ["scripts/build-graphs.ts"],
-	"validate-timeline": ["scripts/validate-session-timeline.ts"],
+	build: ["scripts/build-curated-store.js"],
+	"build-store": ["scripts/build-curated-store.js"],
+	"export-graph": ["scripts/export-graph-json.js"],
+	"scan-repos": ["scripts/scan-repo-identities.js"],
+	"repo-identities": ["scripts/repo-identity-report.js"],
+	"backup-readiness": ["scripts/backup-readiness-report.js"],
+	"inventory-buckets": ["scripts/inventory-session-buckets.js"],
+	"logical-threads": ["scripts/logical-thread-report.js"],
+	"build-graphs": ["scripts/build-graphs.js"],
+	"validate-timeline": ["scripts/validate-session-timeline.js"],
 };
 
 if (command === "help" || command === "--help" || command === "-h") {
@@ -56,5 +56,5 @@ if (!script) {
 	process.exit(2);
 }
 
-const result = spawnSync("tsx", [...script, ...rest], { cwd: root, stdio: "inherit", env: process.env });
+const result = spawnSync(process.execPath, [...script, ...rest], { cwd: root, stdio: "inherit", env: process.env });
 process.exit(result.status ?? 1);
