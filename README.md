@@ -27,6 +27,24 @@ agent-session-store backup-readiness
 
 The CLI wraps the existing scripts and keeps canonical data preparation separate from graph rendering.
 
+## Delayed install after pi-session-move
+
+`pi-session-move` can be installed first and is sufficient to record raw move evidence. Later, `agent-session-store build` can rebuild the canonical SQLite/export state from namespaced move inputs:
+
+```text
+~/.pi/agent/session-move/manifests/relocations.jsonl
+~/.pi/agent/session-move/manifests/relocation-lineages.jsonl
+```
+
+Legacy inputs are still read for compatibility:
+
+```text
+~/.pi/agent/relocations.jsonl
+~/.pi/agent/relocation-lineages.jsonl
+```
+
+Required move-manifest fields are the source/destination session paths, source/destination cwd, timestamp, and move mode/operation metadata when available. `pi-session-move` writes those fields directly. A missing `~/.pi/agent/session-store/session-store.sqlite` is expected on first rebuild; `agent-session-store build` creates it and `agent-session-store export-graph` then writes `graph-export.json`.
+
 ## Main scripts
 
 ```bash
