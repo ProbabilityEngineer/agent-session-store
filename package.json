@@ -17,7 +17,6 @@
     "repo-identities": "tsx scripts/repo-identity-report.ts",
     "scan-repos": "tsx scripts/scan-repo-identities.ts",
     "enrich-github-repos": "tsx scripts/enrich-github-repos.ts",
-    "temporal-lineage-svg": "tsx scripts/build-temporal-lineage-svg.ts",
     "build-graphs": "tsx scripts/build-graphs.ts"
   },
   "keywords": [
