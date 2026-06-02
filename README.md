@@ -61,7 +61,7 @@ npm run lint                 # TypeScript check
 
 SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
 
-`npm run build-graphs` writes timestamped graph reports under `~/Desktop/session-graphs/`:
+`npm run build-graphs` writes timestamped HTML graph reports under `~/Desktop/session-graphs/`. Data/debug artifacts (`.json`, `.mmd`, `.md`) are omitted by default; include them with `npm run build-graphs -- --include-data`.
 
 | File pattern | Previous name | Meaning |
 |---|---|---|

@@ -685,6 +685,7 @@ function markdown(report: Awaited<ReturnType<typeof build>>, mmd: string) {
 
 async function main() {
 	const snapshot = process.argv.includes("--snapshot");
+	const includeData = process.argv.includes("--include-data");
 	const allStarts = process.argv.includes("--all-starts");
 	const includeUnresolved = process.argv.includes("--include-unresolved");
 	await mkdir(outputDir, { recursive: true });
@@ -700,27 +701,31 @@ async function main() {
 	const timelineSessionsJson = JSON.stringify(temporalTimelineJson(report, { allStarts, includeUnresolved, groupBy: "session" }), null, 2) + "\n";
 	const timelineSessionsHtml = temporalTimelineHtml(report, { allStarts, includeUnresolved, groupBy: "session", stamp });
 	const inventoryJson = JSON.stringify(temporalInventoryJson(report), null, 2) + "\n";
-	const graphFiles = [
+	const htmlFiles = [
+		["lineage-full.html", htmlDoc],
+		["lineage-focused.html", focusedDoc],
+		["timeline-projects.html", timelineHtml],
+		["timeline-sessions.html", timelineSessionsHtml],
+	] as const;
+	const dataFiles = [
 		["lineage-full.json", JSON.stringify(report, null, 2) + "\n"],
 		["lineage-full.mmd", mmd + "\n"],
 		["lineage-full.md", md],
-		["lineage-full.html", htmlDoc],
 		["lineage-focused.mmd", focusedMmd + "\n"],
-		["lineage-focused.html", focusedDoc],
 		["timeline-projects.json", timelineJson],
-		["timeline-projects.html", timelineHtml],
 		["timeline-sessions.json", timelineSessionsJson],
-		["timeline-sessions.html", timelineSessionsHtml],
 		["temporal-inventory.json", inventoryJson],
 	] as const;
+	const graphFiles = includeData ? [...htmlFiles, ...dataFiles] : htmlFiles;
 	const written: string[] = [];
 	for (const [name, content] of graphFiles) {
 		const path = join(outputDir, `${stamp}-${name}`);
 		await writeFile(path, content, { encoding: "utf8", flag: "wx" });
 		written.push(path);
 	}
-	console.log(`Wrote build-graphs reports with ${report.edges.length} edges to ${outputDir}`);
+	console.log(`Wrote build-graphs HTML reports with ${report.edges.length} edges to ${outputDir}`);
 	for (const path of written) console.log(path);
+	if (!includeData) console.log("Data/debug artifacts omitted; rerun with --include-data to write JSON/MMD/MD files.");
 	if (snapshot) console.log("--snapshot is no longer needed: build-graphs outputs are timestamped by default.");
 }
 
