@@ -61,14 +61,16 @@ npm run lint                 # TypeScript check
 
 SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
 
-`npm run build-graphs` writes four named graph reports under `~/.pi/agent/session-graph/`:
+`npm run build-graphs` writes timestamped graph reports under `~/Desktop/session-graphs/`:
 
-| File | Previous name | Meaning |
+| File pattern | Previous name | Meaning |
 |---|---|---|
-| `lineage-full.html` | `temporal-lineage.html` | Full temporal lineage graph: all visible lineage edges plus connected/significant standalone session starts. |
-| `lineage-focused.html` | `temporal-lineage-focused.html` | Focused temporal lineage graph: sessions with one or more visible relocation/move/overlay edges; omits standalone starts. |
-| `timeline-projects.html` | `temporal-timeline.html` | Timeline grouped by project/folder label. |
-| `timeline-sessions.html` | `temporal-timeline-sessions.html` | Same timeline data grouped by individual session file. |
+| `<timestamp>-lineage-full.html` | `temporal-lineage.html` | Full temporal lineage graph: all visible lineage edges plus connected/significant standalone session starts. |
+| `<timestamp>-lineage-focused.html` | `temporal-lineage-focused.html` | Focused temporal lineage graph: sessions with one or more visible relocation/move/overlay edges; omits standalone starts. |
+| `<timestamp>-timeline-projects.html` | `temporal-timeline.html` | Timeline grouped by project/folder label. |
+| `<timestamp>-timeline-sessions.html` | `temporal-timeline-sessions.html` | Same timeline data grouped by individual session file. |
+
+The HTML page titles include the same timestamp and graph type, e.g. `<timestamp> — Lineage Full`.
 
 ## Repo identity
 

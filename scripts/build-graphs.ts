@@ -55,9 +55,10 @@ type TemporalEdge = {
 
 const home = process.env.HOME ?? ".";
 const agentDir = process.env.PI_CODING_AGENT_DIR ?? join(home, ".pi", "agent");
-const outputDir = join(agentDir, "session-graph");
+const graphInputDir = join(agentDir, "session-graph");
+const outputDir = process.env.AGENT_SESSION_GRAPH_OUTPUT_DIR ?? join(home, "Desktop", "session-graphs");
 const manifestPath = join(agentDir, "relocations.jsonl");
-const overlayPath = join(outputDir, "lineage-overlays.jsonl");
+const overlayPath = join(graphInputDir, "lineage-overlays.jsonl");
 const sessionsDir = join(agentDir, "sessions");
 
 function shortHash(value: string) {
@@ -399,12 +400,12 @@ function mermaid(report: Awaited<ReturnType<typeof build>>, options: { allStarts
 	return lines.join("\n");
 }
 
-function html(report: Awaited<ReturnType<typeof build>>, mmd: string) {
+function html(report: Awaited<ReturnType<typeof build>>, mmd: string, stamp: string) {
 	return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Lineage Full</title>
+<title>${stamp} — Lineage Full</title>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -423,7 +424,7 @@ document.getElementById('reset')?.addEventListener('click', () => { window.panZo
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.4}.legend,.controls{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin:1rem 0}.controls{position:sticky;top:0;z-index:10}button{margin-right:.5rem;padding:.35rem .7rem;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer}.mermaid{border:1px solid #e5e7eb;border-radius:8px;padding:1rem;overflow:hidden;height:80vh}code{background:#f3f4f6;padding:0.1rem 0.25rem;border-radius:4px}</style>
 </head>
 <body>
-<h1>Lineage Full</h1>
+<h1>${stamp} — Lineage Full</h1>
 <p>Generated: ${report.generatedAt}</p>
 <div class="legend">
 <p><strong>lineage-full</strong>: full temporal lineage graph. Includes all visible lineage edges plus connected/significant standalone session starts. Old output name: <code>temporal-lineage.html</code>.</p>
@@ -555,12 +556,12 @@ function focusedMermaid(report: Awaited<ReturnType<typeof build>>, options: { in
 	return lines.join("\n");
 }
 
-function focusedHtml(report: Awaited<ReturnType<typeof build>>, mmd: string) {
+function focusedHtml(report: Awaited<ReturnType<typeof build>>, mmd: string, stamp: string) {
 	return `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8">
-<title>Lineage Focused</title>
+<title>${stamp} — Lineage Focused</title>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <script type="module">
 import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
@@ -579,7 +580,7 @@ document.getElementById('reset')?.addEventListener('click', () => { window.panZo
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.4}.legend,.controls{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin:1rem 0}.controls{position:sticky;top:0;z-index:10}button{margin-right:.5rem;padding:.35rem .7rem;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer}.mermaid{border:1px solid #e5e7eb;border-radius:8px;padding:1rem;overflow:hidden;height:80vh}code{background:#f3f4f6;padding:.1rem .25rem;border-radius:4px}</style>
 </head>
 <body>
-<h1>Lineage Focused</h1>
+<h1>${stamp} — Lineage Focused</h1>
 <p>Generated: ${report.generatedAt}</p>
 <div class="legend"><p><strong>lineage-focused</strong>: focused temporal lineage graph. Includes sessions with one or more visible relocation/move/overlay edges and omits standalone starts. Old output name: <code>temporal-lineage-focused.html</code>.</p><ul><li><strong>Blue boxes</strong>: session files/topology nodes. They now include known start/edge/last dates plus current line counts.</li><li><strong>Yellow diamonds</strong>: source-session state at a relocation timestamp.</li><li><strong>Dotted arrows</strong>: progression within the same append-only session file.</li><li><strong>Solid arrows</strong>: relocation/fork edges to destination sessions.</li></ul></div>
 <div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div>
@@ -589,7 +590,7 @@ document.getElementById('reset')?.addEventListener('click', () => { window.panZo
 `;
 }
 
-function temporalTimelineHtml(report: Awaited<ReturnType<typeof build>>, options: { allStarts?: boolean; includeUnresolved?: boolean; groupBy?: "project" | "session" } = {}) {
+function temporalTimelineHtml(report: Awaited<ReturnType<typeof build>>, options: { allStarts?: boolean; includeUnresolved?: boolean; groupBy?: "project" | "session"; stamp?: string } = {}) {
 	const data = timelineData(report, options);
 	const left = 280;
 	const right = 80;
@@ -647,10 +648,10 @@ function temporalTimelineHtml(report: Awaited<ReturnType<typeof build>>, options
 	}
 	svg.push(`</svg>`);
 	return `<!doctype html>
-<html><head><meta charset="utf-8"><title>${options.groupBy === "session" ? "Timeline Sessions" : "Timeline Projects"}</title>
+<html><head><meta charset="utf-8"><title>${options.stamp ? `${options.stamp} — ` : ""}${options.groupBy === "session" ? "Timeline Sessions" : "Timeline Projects"}</title>
 <script src="https://cdn.jsdelivr.net/npm/svg-pan-zoom@3.6.2/dist/svg-pan-zoom.min.js"></script>
 <style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;line-height:1.4}.legend,.controls{background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:1rem;margin:1rem 0}.controls{position:sticky;top:0;z-index:10}button{margin-right:.5rem;padding:.35rem .7rem;border:1px solid #d1d5db;border-radius:6px;background:white;cursor:pointer}#wrap{height:82vh;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden}svg{width:100%;height:100%}code{background:#f3f4f6;padding:.1rem .25rem;border-radius:4px}</style>
-</head><body><h1>${options.groupBy === "session" ? "Timeline Sessions" : "Timeline Projects"}</h1><p>Generated: ${report.generatedAt}</p><div class="legend"><p><strong>${options.groupBy === "session" ? "timeline-sessions" : "timeline-projects"}</strong>: ${options.groupBy === "session" ? "same timeline data grouped by individual session file. Old output name: <code>temporal-timeline-sessions.html</code>." : "timeline grouped by project/folder label. Old output name: <code>temporal-timeline.html</code>."}</p><ul><li>x-axis is real time, linearly scaled.</li><li>Rows are ${options.groupBy === "session" ? "individual session files" : "project/folder labels"}, delimited by horizontal top/bottom boundary lines.</li><li>Blue horizontal bars show active span from first start to last observed event on that row; dark-blue dots mark last used.</li><li>Purple dots are session starts.</li><li>Yellow dots are relocation events on the source row.</li><li>Green curves connect relocation events to destination rows at the same timestamp.</li><li>Hover points/curves for details. No transcript content is included.</li></ul></div><div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div><div id="wrap">${svg.join("\n")}</div><script>const svg=document.getElementById('timeline-svg'); window.panZoom=svgPanZoom(svg,{controlIconsEnabled:true,fit:true,center:true,minZoom:0.05,maxZoom:100,zoomScaleSensitivity:.25}); document.getElementById('zoom-in').onclick=()=>panZoom.zoomIn(); document.getElementById('zoom-out').onclick=()=>panZoom.zoomOut(); document.getElementById('reset').onclick=()=>{panZoom.resetZoom();panZoom.center();panZoom.fit();};</script></body></html>\n`;
+</head><body><h1>${options.stamp ? `${options.stamp} — ` : ""}${options.groupBy === "session" ? "Timeline Sessions" : "Timeline Projects"}</h1><p>Generated: ${report.generatedAt}</p><div class="legend"><p><strong>${options.groupBy === "session" ? "timeline-sessions" : "timeline-projects"}</strong>: ${options.groupBy === "session" ? "same timeline data grouped by individual session file. Old output name: <code>temporal-timeline-sessions.html</code>." : "timeline grouped by project/folder label. Old output name: <code>temporal-timeline.html</code>."}</p><ul><li>x-axis is real time, linearly scaled.</li><li>Rows are ${options.groupBy === "session" ? "individual session files" : "project/folder labels"}, delimited by horizontal top/bottom boundary lines.</li><li>Blue horizontal bars show active span from first start to last observed event on that row; dark-blue dots mark last used.</li><li>Purple dots are session starts.</li><li>Yellow dots are relocation events on the source row.</li><li>Green curves connect relocation events to destination rows at the same timestamp.</li><li>Hover points/curves for details. No transcript content is included.</li></ul></div><div class="controls"><button id="zoom-in">Zoom in</button><button id="zoom-out">Zoom out</button><button id="reset">Fit/reset</button><span>Drag to pan. Mouse wheel/trackpad to zoom.</span></div><div id="wrap">${svg.join("\n")}</div><script>const svg=document.getElementById('timeline-svg'); window.panZoom=svgPanZoom(svg,{controlIconsEnabled:true,fit:true,center:true,minZoom:0.05,maxZoom:100,zoomScaleSensitivity:.25}); document.getElementById('zoom-in').onclick=()=>panZoom.zoomIn(); document.getElementById('zoom-out').onclick=()=>panZoom.zoomOut(); document.getElementById('reset').onclick=()=>{panZoom.resetZoom();panZoom.center();panZoom.fit();};</script></body></html>\n`;
 }
 
 function markdown(report: Awaited<ReturnType<typeof build>>, mmd: string) {
@@ -687,18 +688,19 @@ async function main() {
 	const allStarts = process.argv.includes("--all-starts");
 	const includeUnresolved = process.argv.includes("--include-unresolved");
 	await mkdir(outputDir, { recursive: true });
+	const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const report = await build();
 	const mmd = mermaid(report, { allStarts, includeUnresolved });
 	const md = markdown(report, mmd);
-	const htmlDoc = html(report, mmd);
+	const htmlDoc = html(report, mmd, stamp);
 	const focusedMmd = focusedMermaid(report, { includeUnresolved });
-	const focusedDoc = focusedHtml(report, focusedMmd);
+	const focusedDoc = focusedHtml(report, focusedMmd, stamp);
 	const timelineJson = JSON.stringify(temporalTimelineJson(report, { allStarts, includeUnresolved, groupBy: "project" }), null, 2) + "\n";
-	const timelineHtml = temporalTimelineHtml(report, { allStarts, includeUnresolved, groupBy: "project" });
+	const timelineHtml = temporalTimelineHtml(report, { allStarts, includeUnresolved, groupBy: "project", stamp });
 	const timelineSessionsJson = JSON.stringify(temporalTimelineJson(report, { allStarts, includeUnresolved, groupBy: "session" }), null, 2) + "\n";
-	const timelineSessionsHtml = temporalTimelineHtml(report, { allStarts, includeUnresolved, groupBy: "session" });
+	const timelineSessionsHtml = temporalTimelineHtml(report, { allStarts, includeUnresolved, groupBy: "session", stamp });
 	const inventoryJson = JSON.stringify(temporalInventoryJson(report), null, 2) + "\n";
-	const latestFiles = [
+	const graphFiles = [
 		["lineage-full.json", JSON.stringify(report, null, 2) + "\n"],
 		["lineage-full.mmd", mmd + "\n"],
 		["lineage-full.md", md],
@@ -711,16 +713,15 @@ async function main() {
 		["timeline-sessions.html", timelineSessionsHtml],
 		["temporal-inventory.json", inventoryJson],
 	] as const;
-	for (const [name, content] of latestFiles) await writeFile(join(outputDir, name), content);
-	let snapshotDir: string | undefined;
-	if (snapshot) {
-		const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-		snapshotDir = join(outputDir, "snapshots", "temporal-lineage");
-		await mkdir(snapshotDir, { recursive: true });
-		for (const [name, content] of latestFiles) await writeFile(join(snapshotDir, `${stamp}-${name}`), content);
+	const written: string[] = [];
+	for (const [name, content] of graphFiles) {
+		const path = join(outputDir, `${stamp}-${name}`);
+		await writeFile(path, content, { encoding: "utf8", flag: "wx" });
+		written.push(path);
 	}
-	console.log(`Wrote temporal lineage with ${report.edges.length} edges to ${outputDir}`);
-	if (snapshotDir) console.log(`Wrote timestamped snapshot to ${snapshotDir}`);
+	console.log(`Wrote build-graphs reports with ${report.edges.length} edges to ${outputDir}`);
+	for (const path of written) console.log(path);
+	if (snapshot) console.log("--snapshot is no longer needed: build-graphs outputs are timestamped by default.");
 }
 
 await main();
