@@ -42,7 +42,7 @@ npm run reconstruct          # local history reconstruction
 npm run validate-timeline    # timeline validation
 npm run index-segments       # metadata-only session segment index
 npm run prefix-lineage       # prefix/common-prefix lineage reconstruction
-npm run temporal-lineage     # original temporal Mermaid lineage graph
+npm run temporal-lineage     # Mermaid lineage/timeline reports: lineage-full, lineage-focused, timeline-projects, timeline-sessions
 npm run temporal-lineage-svg # SVG lineage graph, no Mermaid size limit
 npm run lint                 # TypeScript check
 ```
@@ -61,6 +61,15 @@ npm run lint                 # TypeScript check
 ```
 
 SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
+
+`npm run temporal-lineage` writes four named graph reports under `~/.pi/agent/session-graph/`:
+
+| File | Previous name | Meaning |
+|---|---|---|
+| `lineage-full.html` | `temporal-lineage.html` | Full temporal lineage graph: all visible lineage edges plus connected/significant standalone session starts. |
+| `lineage-focused.html` | `temporal-lineage-focused.html` | Focused temporal lineage graph: sessions with one or more visible relocation/move/overlay edges; omits standalone starts. |
+| `timeline-projects.html` | `temporal-timeline.html` | Timeline grouped by project/folder label. |
+| `timeline-sessions.html` | `temporal-timeline-sessions.html` | Same timeline data grouped by individual session file. |
 
 ## Repo identity
 
