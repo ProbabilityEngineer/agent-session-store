@@ -18,6 +18,9 @@ const sessionsDir = join(agentDir, "sessions");
 const legacyManifestPath = join(agentDir, "relocations.jsonl");
 const sessionMoveManifestPath = join(agentDir, "session-move", "manifests", "relocations.jsonl");
 const manifestPaths = [legacyManifestPath, sessionMoveManifestPath];
+const legacyLineageNamesPath = join(agentDir, "relocation-lineages.jsonl");
+const sessionMoveLineageNamesPath = join(agentDir, "session-move", "manifests", "relocation-lineages.jsonl");
+const lineageNamePaths = [legacyLineageNamesPath, sessionMoveLineageNamesPath];
 const overlaysPath = join(graphDir, "lineage-overlays.jsonl");
 const preManifestPath = join(graphDir, "pre-manifest-lineage.json");
 const prefixLineagePath = join(graphDir, "prefix-lineage.json");
@@ -64,6 +67,8 @@ type RelocationRecord = {
 	batchId?: string;
 	__manifestPath?: string;
 };
+
+type LineageNameRecord = { type: "lineage_named"; root: string; name: string; currentSession?: string; sessionId?: string; created?: string; updated?: string; source?: string; __lineageNamePath?: string };
 
 type OverlayRecord =
 	| { kind: "root"; session: string; historicalCwd?: string; label?: string; confidence?: string; evidence?: string[]; notes?: string[] }
@@ -146,6 +151,20 @@ async function readRelocationManifests(paths: string[]): Promise<RelocationRecor
 		}
 	}
 	return out.sort((a, b) => a.ts.localeCompare(b.ts));
+}
+async function readLineageNames(paths: string[]): Promise<LineageNameRecord[]> {
+	const seen = new Set<string>();
+	const out: LineageNameRecord[] = [];
+	for (const path of paths) {
+		for (const record of await readJsonl<LineageNameRecord>(path)) {
+			if (record.type !== "lineage_named" || !record.root || !record.name) continue;
+			const key = JSON.stringify({ ...record, __lineageNamePath: undefined });
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push({ ...record, __lineageNamePath: path });
+		}
+	}
+	return out.sort((a, b) => (a.updated ?? a.created ?? "").localeCompare(b.updated ?? b.created ?? ""));
 }
 async function readJson<T>(path: string): Promise<T | undefined> { if (!(await exists(path))) return undefined; return JSON.parse(await readFile(path, "utf8")) as T; }
 function rowTimestamp(row: Json): string | undefined { for (const key of ["timestamp", "ts", "createdAt", "created_at"]) if (typeof row[key] === "string" && /^\d{4}-\d{2}-\d{2}T/.test(row[key])) return row[key] as string; const msg = row.message as Json | undefined; return typeof msg?.timestamp === "string" ? msg.timestamp : undefined; }
@@ -658,6 +677,7 @@ function replaceSqlite(dbPath: string, store: Store) {
 async function main() {
 	const generatedAt = new Date().toISOString();
 	const manifest = await readRelocationManifests(manifestPaths);
+	const lineageNames = await readLineageNames(lineageNamePaths);
 	const overlays = await readJsonl<OverlayRecord>(overlaysPath);
 	const preManifest = await readJson<Json>(preManifestPath);
 	const prefixLineage = await readJson<Json>(prefixLineagePath);
@@ -666,11 +686,12 @@ async function main() {
 	const repoIdentitySidecar = await readJsonl<RepoIdentitySidecar>(repoIdentitySidecarPath);
 	const observationMarkSidecar = await readJsonl<ObservationMarkSidecar>(observationMarksSidecarPath);
 
-	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPaths: manifestPaths.join(":"), legacyManifestPath, sessionMoveManifestPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
+	const store: Store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPaths: manifestPaths.join(":"), legacyManifestPath, sessionMoveManifestPath, lineageNamePaths: lineageNamePaths.join(":"), legacyLineageNamesPath, sessionMoveLineageNamesPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
 	const seen = { sources: new Set<string>(), sessions: new Set<string>(), obs: new Set<string>(), edges: new Set<string>(), labels: new Set<string>(), aliases: new Set<string>(), classes: new Set<string>(), evidence: new Set<string>(), backups: new Set<string>(), repos: new Set<string>(), artifacts: new Set<string>(), marks: new Set<string>(), batches: new Set<string>(), repoIdentities: new Set<string>(), repoObservations: new Set<string>(), repoEvents: new Set<string>() };
 	const addSource = (provider: string, kind: string, uri: string, label?: string, metadata?: Json) => { const source: Source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
 	const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
 	const manifestSources = new Map(manifestPaths.map((path) => [path, addSource("pi", "relocation_manifest", path, path === sessionMoveManifestPath ? "Pi session-move manifest" : "Pi legacy relocation manifest")]));
+	const lineageNameSources = new Map(lineageNamePaths.map((path) => [path, addSource("pi", "lineage_name_sidecar", path, path === sessionMoveLineageNamesPath ? "Pi session-move lineage names" : "Pi legacy lineage names")]));
 	const manifestSource = manifestSources.get(legacyManifestPath)!;
 	const overlaySource = addSource("manual-curation", "manual_overlay", overlaysPath, "Lineage overlays");
 	const preSource = addSource("manual-curation", "curated_report", preManifestPath, "Pre-manifest lineage report");
@@ -684,6 +705,7 @@ async function main() {
 	debug("collecting live session paths");
 	const paths = new Set<string>(await listSessionFiles());
 	for (const record of manifest) { paths.add(record.sourceSession); paths.add(record.destinationSession); }
+	for (const record of lineageNames) { paths.add(record.root); if (record.currentSession) paths.add(record.currentSession); }
 	for (const record of overlays) {
 		if (record.kind === "root") paths.add(record.session);
 		if (record.kind === "edge") { paths.add(record.source); paths.add(record.destination); }
@@ -705,6 +727,16 @@ async function main() {
 		}
 		obsByPath.set(path, observation);
 		sessionByPath.set(path, session);
+	}
+
+	debug("importing pinned lineage names");
+	for (const record of lineageNames) {
+		const sourceId = lineageNameSources.get(record.__lineageNamePath ?? sessionMoveLineageNamesPath);
+		const targets = [sessionByPath.get(record.root), record.currentSession ? sessionByPath.get(record.currentSession) : undefined].filter((session): session is Session => Boolean(session));
+		for (const session of targets) {
+			pushUnique(store.labels, seen.labels, { id: id("label", "pinned-lineage", session.id, record.name, record.updated ?? record.created), targetType: "session", targetId: session.id, labelType: "pinned_lineage_name", value: record.name, confidence: "authoritative", sourceId, metadata: { root: record.root, currentSession: record.currentSession, sessionId: record.sessionId, created: record.created, updated: record.updated, source: record.source, sidecarPath: record.__lineageNamePath } });
+		}
+		if (!targets.length) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "unmatched-lineage-name", record.root, record.currentSession, record.name), kind: "lineage_name_unmatched", sourceId, timestamp: record.updated ?? record.created ?? generatedAt, confidence: "low", summary: `Pinned lineage name did not match imported sessions: ${record.name}`, data: { ...record } });
 	}
 
 	debug("deriving relocation manifest edges");
