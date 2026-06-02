@@ -2,7 +2,7 @@
 
 ## Project
 
-`agent-session-store` is private/dev tooling for canonical agent session lineage storage, import adapters, reconstruction, evidence curation, and report generation.
+`agent-session-store` is public tooling for canonical agent session lineage storage, import adapters, reconstruction, evidence curation, and report generation.
 
 ## Principles
 
