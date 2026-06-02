@@ -17,7 +17,8 @@
     "export-graph": "tsx scripts/export-graph-json.ts",
     "repo-identities": "tsx scripts/repo-identity-report.ts",
     "scan-repos": "tsx scripts/scan-repo-identities.ts",
-    "enrich-github-repos": "tsx scripts/enrich-github-repos.ts"
+    "enrich-github-repos": "tsx scripts/enrich-github-repos.ts",
+    "temporal-lineage-svg": "tsx scripts/build-temporal-lineage-svg.ts"
   },
   "keywords": [
     "agent",

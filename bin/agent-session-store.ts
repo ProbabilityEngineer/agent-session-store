@@ -25,6 +25,7 @@ const scripts: Record<string, string[]> = {
 	"inventory-buckets": ["scripts/inventory-session-buckets.ts"],
 	"logical-threads": ["scripts/logical-thread-report.ts"],
 	"temporal-lineage": ["scripts/build-temporal-lineage.ts"],
+	"temporal-lineage-svg": ["scripts/build-temporal-lineage-svg.ts"],
 	"validate-timeline": ["scripts/validate-session-timeline.ts"],
 };
 
