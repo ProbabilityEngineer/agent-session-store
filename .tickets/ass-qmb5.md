@@ -18,6 +18,7 @@ First-publish agent-session-store to npm and configure GitHub trusted publishing
 - Manually publish first package with npm publish --access public --auth-type=web.
 - Configure npm trust github agent-session-store --repo ProbabilityEngineer/agent-session-store --file publish.yml --allow-publish --yes.
 - Verify npm trust list and npm view agent-session-store version.
+- Verify npm provenance attestation on the published release.
 - Document any release notes or manual auth blockers.
 
 
