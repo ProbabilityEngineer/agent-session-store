@@ -52,6 +52,10 @@ try {
 		const metadata = parseJson<Record<string, any>>(row.metadata_json, {});
 		return { id: row.id, kind: row.kind, path: row.path, generatedAt: row.generated_at, generator: row.generator, repoIdentityId: metadata.repoIdentityId, sessionIds: metadata.sessionIds ?? [], providers: metadata.providers ?? [], start: metadata.start, end: metadata.end, sessionCount: metadata.sessionCount ?? 0, confidence: "derived", provenance: row.generator, metadata };
 	});
+	const activeTimeMetrics = db.prepare("SELECT id, kind, path, generated_at, generator, metadata_json FROM artifacts WHERE kind = 'active_time_metric' ORDER BY id").all().map((row: any) => {
+		const metadata = parseJson<Record<string, any>>(row.metadata_json, {});
+		return { id: row.id, kind: row.kind, path: row.path, generatedAt: row.generated_at, generator: row.generator, project: metadata.project, activeMinutes: metadata.activeMinutes ?? 0, activeHours: metadata.activeHours ?? 0, workBlockCount: metadata.workBlockCount ?? 0, sessionCount: metadata.sessionCount ?? 0, sessionIds: metadata.sessionIds ?? [], providers: metadata.providers ?? [], idleThresholdMinutes: metadata.idleThresholdMinutes, confidence: metadata.confidence ?? "derived", provenance: metadata.source ?? row.generator, metadata };
+	});
 	const temporalActivitySpans = sessions.flatMap((session: any) => {
 		const start = session.startTimestamp ?? session.firstSeenAt;
 		const end = session.endTimestamp ?? session.lastSeenAt ?? start;
@@ -61,12 +65,14 @@ try {
 		const toolCount = Object.entries(eventCounts).filter(([key]) => /tool|command|exec|edit|write|read|patch/i.test(key)).reduce((sum, [, value]) => sum + (typeof value === "number" ? value : 0), 0) || undefined;
 		const messageCount = typeof session.metadata?.messageCount === "number" ? session.metadata.messageCount : eventCounts.message;
 		const activityScore = (eventCount ?? 0) + (toolCount ?? 0) + (messageCount ?? 0);
-		return [{ id: `span_${session.id}`, sessionId: session.id, provider: session.provider, providerSessionId: session.providerSessionId, repoIdentityId: session.metadata?.repoIdentityId, cwd: session.metadata?.cwd, label: session.metadata?.displayName ?? session.metadata?.cwd ?? session.providerSessionId ?? session.id, start, end, lineCount: session.lineCount, byteCount: session.byteCount, eventCount, messageCount, toolCount, activityScore, confidence: "derived", provenance: "session-metadata" }];
+		const activeTime = typeof session.metadata?.activeTime === "object" && session.metadata.activeTime ? session.metadata.activeTime as Record<string, any> : undefined;
+		const visitRows = typeof session.metadata?.visitRowMetrics === "object" && session.metadata.visitRowMetrics ? (session.metadata.visitRowMetrics as Record<string, any>).visitRows : undefined;
+		return [{ id: `span_${session.id}`, sessionId: session.id, provider: session.provider, providerSessionId: session.providerSessionId, repoIdentityId: session.metadata?.repoIdentityId, cwd: session.metadata?.cwd, label: session.metadata?.displayName ?? session.metadata?.cwd ?? session.providerSessionId ?? session.id, start, end, lineCount: session.lineCount, byteCount: session.byteCount, eventCount, messageCount, toolCount, activityScore, activeMinutes: activeTime?.activeMinutes, activeHours: activeTime?.activeHours, workBlockCount: activeTime?.workBlockCount, visitRows, metricConfidence: activeTime?.confidence, confidence: "derived", provenance: "session-metadata" }];
 	});
 	const activityMetricMap = new Map<string, any>();
 	for (const span of temporalActivitySpans) {
 		const key = [span.provider, span.repoIdentityId ?? span.cwd ?? "unknown"].join("::");
-		const metric = activityMetricMap.get(key) ?? { id: `activity_${activityMetricMap.size + 1}`, provider: span.provider, repoIdentityId: span.repoIdentityId, cwd: span.cwd, sessionCount: 0, eventCount: 0, messageCount: 0, toolCount: 0, lineCount: 0, byteCount: 0, activityScore: 0, firstStart: span.start, lastEnd: span.end, confidence: "derived", provenance: "session-metadata-aggregate", missingDataNotes: [] as string[] };
+		const metric = activityMetricMap.get(key) ?? { id: `activity_${activityMetricMap.size + 1}`, provider: span.provider, repoIdentityId: span.repoIdentityId, cwd: span.cwd, sessionCount: 0, eventCount: 0, messageCount: 0, toolCount: 0, lineCount: 0, byteCount: 0, activityScore: 0, activeMinutes: 0, activeHours: 0, workBlockCount: 0, visitRows: 0, firstStart: span.start, lastEnd: span.end, confidence: "derived", provenance: "session-metadata-aggregate", missingDataNotes: [] as string[] };
 		metric.sessionCount += 1;
 		metric.eventCount += span.eventCount ?? 0;
 		metric.messageCount += span.messageCount ?? 0;
@@ -74,6 +80,10 @@ try {
 		metric.lineCount += span.lineCount ?? 0;
 		metric.byteCount += span.byteCount ?? 0;
 		metric.activityScore += span.activityScore ?? 0;
+		metric.activeMinutes += span.activeMinutes ?? 0;
+		metric.activeHours = +(metric.activeMinutes / 60).toFixed(2);
+		metric.workBlockCount += span.workBlockCount ?? 0;
+		metric.visitRows += span.visitRows ?? 0;
 		if (span.start < metric.firstStart) metric.firstStart = span.start;
 		if (span.end > metric.lastEnd) metric.lastEnd = span.end;
 		if (span.eventCount === undefined) metric.missingDataNotes.push(`event counts missing for ${span.sessionId}`);
@@ -81,7 +91,7 @@ try {
 	}
 	const activityMetrics = [...activityMetricMap.values()];
 	const graphFilters = { excludedNoiseSessions: allSessions.length - sessions.length, policy: "exclude trivial/test sessions without lineage edges from graph exports; keep them in canonical SQLite/export store" };
-	const payload = { generatedAt: new Date().toISOString(), source: dbPath, graphFilters, sessions, edges, labels, classifications, observationMarks: includedObservationMarks, preservedBranches, logicalThreads, threadMembers, threadEdges, threadResumeTargets, repoIdentities, repoObservations, repoEvents, compactionEvents, workBursts, temporalActivitySpans, activityMetrics };
+	const payload = { generatedAt: new Date().toISOString(), source: dbPath, graphFilters, sessions, edges, labels, classifications, observationMarks: includedObservationMarks, preservedBranches, logicalThreads, threadMembers, threadEdges, threadResumeTargets, repoIdentities, repoObservations, repoEvents, compactionEvents, workBursts, activeTimeMetrics, temporalActivitySpans, activityMetrics };
 	await mkdir(storeDir, { recursive: true });
 	await mkdir(graphDir, { recursive: true });
 	const out = JSON.stringify(payload, null, 2) + "\n";
