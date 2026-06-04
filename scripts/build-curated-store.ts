@@ -367,6 +367,17 @@ function rawSourceManifestMarkdown(entries: RawSourceManifestEntry[]) {
 	return [`# Raw source manifest`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `By status: ${Object.entries(byStatus).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `By provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, ``, `## Imported/session artifacts`, ``, `| Status | Provider | Kind | Path | Size | SHA-256 |`, `| --- | --- | --- | --- | ---: | --- |`, ...entries.filter((entry) => entry.status !== "source-root").slice(0, 2000).map((entry) => `| ${entry.status} | ${entry.provider ?? ""} | ${entry.kind} | \`${entry.path}\` | ${entry.size ?? ""} | ${entry.sha256 ?? ""} |`)].join("\n");
 }
 
+function deriveDuplicateCandidates(store: Store, seen: Seen) {
+	const byHash = new Map<string, Session[]>();
+	for (const session of store.sessions) if (session.contentSha256) { const list = byHash.get(session.contentSha256) ?? []; list.push(session); byHash.set(session.contentSha256, list); }
+	for (const [hash, group] of byHash) {
+		if (group.length <= 1) continue;
+		const providers = [...new Set(group.map((session) => session.provider))].sort();
+		const confidence = providers.length === 1 ? "high" : "medium";
+		for (const session of group) pushUnique(store.evidence, seen.evidence, { id: id("evidence", "duplicate-session", hash, session.id), kind: "duplicate_session_candidate", targetType: "session", targetId: session.id, confidence, summary: `Session content hash appears in ${group.length} imported sessions`, data: { contentSha256: hash, duplicateSessionIds: group.map((item) => item.id), providers } });
+	}
+}
+
 function validationReport(store: Store) {
 	const byProvider = store.sessions.reduce<Record<string, number>>((acc, session) => { acc[session.provider] = (acc[session.provider] ?? 0) + 1; return acc; }, {});
 	const eventByProvider = store.events.reduce<Record<string, number>>((acc, event) => { acc[event.provider] = (acc[event.provider] ?? 0) + 1; return acc; }, {});
@@ -909,6 +920,8 @@ async function main() {
 	debug(`after cross-provider continuity: ${store.edges.length} edges`);
 	deriveAdditionalMetadata(store, seen, generatedAt);
 	debug("after additional metadata");
+	deriveDuplicateCandidates(store, seen);
+	debug("after duplicate candidates");
 
 	deriveLogicalThreads(store);
 	debug("after logical threads");
