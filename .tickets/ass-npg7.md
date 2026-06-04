@@ -1,6 +1,6 @@
 ---
 id: ass-npg7
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-06-03T03:26:53Z

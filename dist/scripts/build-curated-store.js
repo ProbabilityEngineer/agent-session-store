@@ -102,6 +102,9 @@ function maxTs(a, b) { if (!a)
     return b; if (!b)
     return a; return a.localeCompare(b) >= 0 ? a : b; }
 function eventType(row) { return str(row.type) ?? str(asObj(row.payload)?.type) ?? str(row.role) ?? "unknown"; }
+function rowRole(row) { return str(row.role) ?? str(asObj(row.message)?.role) ?? str(asObj(row.payload)?.role); }
+function rowToolName(row) { return str(row.toolName) ?? str(row.tool_name) ?? str(asObj(row.message)?.toolName) ?? str(asObj(row.payload)?.toolName); }
+function rowProviderEventId(row) { return str(row.id) ?? str(row.eventId) ?? str(row.event_id) ?? str(asObj(row.payload)?.id); }
 function recordMetadata(record) {
     if (record.metadata)
         return record.metadata;
@@ -168,6 +171,7 @@ async function sessionObservation(path, sourceId) {
     const compactionSampleLines = [];
     let contentSha256;
     let fileSize;
+    const events = [];
     let fileBirthtime;
     let fileMtime;
     if (await exists(path)) {
@@ -176,13 +180,19 @@ async function sessionObservation(path, sourceId) {
         fileSize = st.size;
         fileBirthtime = st.birthtime.toISOString();
         fileMtime = st.mtime.toISOString();
-        for (const line of raw.split("\n")) {
-            if (!line.trim())
+        let byteOffset = 0;
+        for (const lineWithMaybeEmpty of raw.split("\n")) {
+            const line = lineWithMaybeEmpty;
+            const byteCount = Buffer.byteLength(line, "utf8");
+            if (!line.trim()) {
+                byteOffset += byteCount + 1;
                 continue;
+            }
             lineCount++;
             try {
                 const row = JSON.parse(line);
                 const ts = rowTimestamp(row);
+                events.push({ id: id("event", sessionId, String(lineCount), sha(line)), sessionId, observationId: id("obs", sourceId, path), sourceId, provider: "pi", providerEventId: rowProviderEventId(row), eventType: eventType(row), timestamp: ts, ordinal: lineCount, rowNumber: lineCount, role: rowRole(row), toolName: rowToolName(row), byteOffset, byteCount, contentSha256: sha(line), metadata: { privacyStatus: "metadata-only" } });
                 if (ts) {
                     firstEventAt ??= ts;
                     lastEventAt = ts;
@@ -209,12 +219,14 @@ async function sessionObservation(path, sourceId) {
                 }
             }
             catch { /* metadata-only scan tolerates malformed rows */ }
+            byteOffset += byteCount + 1;
         }
     }
     const compactionMetadata = compactionEventCount ? { eventCount: compactionEventCount, summaryEventCount, compactedLineCount, compactedCharCount, firstCompactionAt, lastCompactionAt, summaryHashes: [...compactionSummaryHashes].sort(), sampleLines: compactionSampleLines, provenance: "pi-session-jsonl", privacyStatus: "metadata-only" } : undefined;
     return {
         session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
         observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
+        events,
     };
 }
 async function fileStats(path) {
@@ -714,7 +726,10 @@ CREATE TABLE IF NOT EXISTS sources (id TEXT PRIMARY KEY, provider TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS import_runs (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT, tool TEXT NOT NULL, status TEXT NOT NULL, stats_json TEXT NOT NULL DEFAULT '{}', notes TEXT);
 CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, provider TEXT NOT NULL, provider_session_id TEXT, canonical_key TEXT NOT NULL UNIQUE, first_seen_at TEXT, last_seen_at TEXT, start_timestamp TEXT, end_timestamp TEXT, event_count INTEGER, line_count INTEGER, byte_count INTEGER, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS session_observations (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, path TEXT, provider_session_id TEXT, observed_at TEXT, snapshot_label TEXT, file_birthtime TEXT, file_mtime TEXT, file_size INTEGER, line_count INTEGER, first_event_at TEXT, last_event_at TEXT, content_sha256 TEXT, prefix_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
-CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, session_id TEXT, source_id TEXT, provider TEXT NOT NULL, provider_event_id TEXT, event_type TEXT NOT NULL, timestamp TEXT, ordinal INTEGER, role TEXT, tool_name TEXT, summary TEXT, content_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, observation_id TEXT, source_id TEXT NOT NULL, provider TEXT NOT NULL, provider_event_id TEXT, event_type TEXT NOT NULL, timestamp TEXT, ordinal INTEGER NOT NULL, row_number INTEGER, role TEXT, tool_name TEXT, byte_offset INTEGER, byte_count INTEGER, content_sha256 TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS idx_events_session_ordinal ON events(session_id, ordinal);
+CREATE INDEX IF NOT EXISTS idx_events_session_timestamp ON events(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_provider_timestamp ON events(provider, timestamp);
 CREATE TABLE IF NOT EXISTS edges (id TEXT PRIMARY KEY, source_session_id TEXT, target_session_id TEXT, edge_type TEXT NOT NULL, timestamp TEXT, source_observation_id TEXT, target_observation_id TEXT, confidence TEXT NOT NULL, provenance TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, target_type TEXT NOT NULL, target_id TEXT NOT NULL, label_type TEXT NOT NULL, value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, source_id TEXT, evidence_id TEXT, metadata_json TEXT NOT NULL DEFAULT '{}');
 CREATE TABLE IF NOT EXISTS aliases (id TEXT PRIMARY KEY, alias_type TEXT NOT NULL, from_value TEXT NOT NULL, to_value TEXT NOT NULL, valid_from TEXT, valid_to TEXT, confidence TEXT NOT NULL, evidence_id TEXT, notes TEXT);
@@ -740,6 +755,7 @@ function replaceSqlite(dbPath, store) {
     const db = new DatabaseSync(dbPath);
     try {
         db.exec("PRAGMA journal_mode = WAL");
+        db.exec("DROP TABLE IF EXISTS events");
         initSqlite(db);
         db.exec("BEGIN");
         for (const table of ["sources", "import_runs", "sessions", "session_observations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backup_observations", "repositories", "artifacts", "checkpoint_artifacts", "observation_marks", "batch_operations", "logical_threads", "thread_members", "thread_edges", "thread_resume_targets", "bucket_statuses", "repo_identities", "repo_observations", "repo_events"])
@@ -756,6 +772,9 @@ function replaceSqlite(dbPath, store) {
         const obsStmt = db.prepare("INSERT INTO session_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         for (const r of store.sessionObservations)
             obsStmt.run(r.id, r.sessionId, r.sourceId, r.path, r.providerSessionId ?? null, r.observedAt ?? null, r.snapshotLabel ?? null, r.fileBirthtime ?? null, r.fileMtime ?? null, r.fileSize ?? null, r.lineCount ?? null, r.firstEventAt ?? null, r.lastEventAt ?? null, r.contentSha256 ?? null, null, json(r.metadata));
+        const eventStmt = db.prepare("INSERT INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+        for (const r of store.events)
+            eventStmt.run(r.id, r.sessionId, r.observationId ?? null, r.sourceId, r.provider, r.providerEventId ?? null, r.eventType, r.timestamp ?? null, r.ordinal, r.rowNumber ?? null, r.role ?? null, r.toolName ?? null, r.byteOffset ?? null, r.byteCount ?? null, r.contentSha256 ?? null, json(r.metadata));
         const edgeStmt = db.prepare("INSERT INTO edges VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
         for (const r of store.edges)
             edgeStmt.run(r.id, r.sourceSessionId, r.targetSessionId, r.edgeType, r.timestamp ?? null, r.sourceObservationId ?? null, r.targetObservationId ?? null, r.confidence, r.provenance, json(r.metadata));
@@ -834,8 +853,8 @@ async function main() {
     const bucketReconciliation = await readJson(bucketReconciliationPath);
     const repoIdentitySidecar = await readJsonl(repoIdentitySidecarPath);
     const observationMarkSidecar = await readJsonl(observationMarksSidecarPath);
-    const store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPaths: manifestPaths.join(":"), legacyManifestPath, sessionMoveManifestPath, lineageNamePaths: lineageNamePaths.join(":"), legacyLineageNamesPath, sessionMoveLineageNamesPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
-    const seen = { sources: new Set(), sessions: new Set(), obs: new Set(), edges: new Set(), labels: new Set(), aliases: new Set(), classes: new Set(), evidence: new Set(), backups: new Set(), repos: new Set(), artifacts: new Set(), marks: new Set(), batches: new Set(), repoIdentities: new Set(), repoObservations: new Set(), repoEvents: new Set() };
+    const store = { schemaVersion: 1, generatedAt, inputs: { agentDir, sessionsDir, manifestPaths: manifestPaths.join(":"), legacyManifestPath, sessionMoveManifestPath, lineageNamePaths: lineageNamePaths.join(":"), legacyLineageNamesPath, sessionMoveLineageNamesPath, overlaysPath, preManifestPath, prefixLineagePath, inventoryPath, bucketReconciliationPath, repoIdentitySidecarPath, observationMarksSidecarPath, oldExtensionsDir }, sources: [], importRuns: [], sessions: [], sessionObservations: [], events: [], edges: [], labels: [], aliases: [], classifications: [], evidence: [], backupObservations: [], repositories: [], artifacts: [], checkpointArtifacts: [], observationMarks: [], batchOperations: [], logicalThreads: [], threadMembers: [], threadEdges: [], threadResumeTargets: [], bucketStatuses: [], repoIdentities: [], repoObservations: [], repoEvents: [] };
+    const seen = { sources: new Set(), sessions: new Set(), obs: new Set(), events: new Set(), edges: new Set(), labels: new Set(), aliases: new Set(), classes: new Set(), evidence: new Set(), backups: new Set(), repos: new Set(), artifacts: new Set(), marks: new Set(), batches: new Set(), repoIdentities: new Set(), repoObservations: new Set(), repoEvents: new Set() };
     const addSource = (provider, kind, uri, label, metadata) => { const source = { id: id("source", provider, kind, uri), provider, kind, uri, label, metadata }; pushUnique(store.sources, seen.sources, source); return source.id; };
     const liveSource = addSource("pi", "live_sessions", sessionsDir, "Pi live sessions");
     const manifestSources = new Map(manifestPaths.map((path) => [path, addSource("pi", "relocation_manifest", path, path === sessionMoveManifestPath ? "Pi session-move manifest" : "Pi legacy relocation manifest")]));
@@ -875,9 +894,11 @@ async function main() {
     debug(`importing ${paths.size} pi session paths`);
     for (const path of [...paths].sort()) {
         const source = path.includes("/Downloads/session-backups/") ? addSource("backup-snapshot", "backup_snapshot", path.split("/Macintosh HD/")[0], basename(path.split("/Macintosh HD/")[0])) : liveSource;
-        const { session, observation } = await sessionObservation(path, source);
+        const { session, observation, events } = await sessionObservation(path, source);
         pushUnique(store.sessions, seen.sessions, session);
         pushUnique(store.sessionObservations, seen.obs, observation);
+        for (const event of events)
+            pushUnique(store.events, seen.events, event);
         if (typeof session.metadata?.displayName === "string")
             pushUnique(store.labels, seen.labels, { id: id("label", "display", session.id, session.metadata.displayName), targetType: "session", targetId: session.id, labelType: "display_name", value: session.metadata.displayName, confidence: "authoritative", sourceId: source });
         const compaction = asObj(observation.metadata?.compaction);
@@ -1041,11 +1062,12 @@ async function main() {
     deriveResumeTargets(store);
     debug("after resume targets");
     store.sources.sort((a, b) => a.id.localeCompare(b.id));
-    for (const key of ["sessions", "sessionObservations", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses", "repoIdentities", "repoObservations", "repoEvents"])
+    for (const key of ["sessions", "sessionObservations", "events", "edges", "labels", "aliases", "classifications", "evidence", "backupObservations", "repositories", "artifacts", "checkpointArtifacts", "observationMarks", "batchOperations", "logicalThreads", "threadMembers", "threadEdges", "threadResumeTargets", "bucketStatuses", "repoIdentities", "repoObservations", "repoEvents"])
         store[key].sort((a, b) => a.id.localeCompare(b.id));
     await mkdir(storeDir, { recursive: true });
     await mkdir(graphDir, { recursive: true });
-    const out = JSON.stringify(store, null, 2) + "\n";
+    const exportStore = { ...store, events: [], eventIndex: { storage: "sqlite", table: "events", count: store.events.length, privacyStatus: "metadata-only" } };
+    const out = JSON.stringify(exportStore, null, 2) + "\n";
     debug("writing exports");
     await writeFile(join(storeDir, "session-store.export.json"), out);
     await writeFile(join(graphDir, "curated-store.json"), out);
