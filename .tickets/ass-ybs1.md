@@ -1,6 +1,6 @@
 ---
 id: ass-ybs1
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-06-03T03:27:00Z

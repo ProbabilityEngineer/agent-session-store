@@ -37,6 +37,7 @@ const oldExtensionsDir = join(home, "git", "agents", "x-pi-old-extensions");
 const sqlitePath = join(storeDir, "session-store.sqlite");
 const defaultCodingSessionsRoots = [
     join(home, "Downloads", "coding-sessions"),
+    join(home, "Desktop", "developer-archive", "x-backups-coding-sessions", "keep-session-data"),
     join(home, "Desktop", "developer-archive", "coding-sessions", "keep-session-data"),
     join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "developer", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
 ];
