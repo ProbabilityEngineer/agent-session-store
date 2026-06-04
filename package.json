@@ -37,6 +37,8 @@
     "logical-threads": "tsx scripts/logical-thread-report.ts",
     "export-graph": "tsx scripts/export-graph-json.ts",
     "repo-identities": "tsx scripts/repo-identity-report.ts",
+    "repo-identity-candidates": "tsx scripts/repo-identity-candidates.ts",
+    "approve-repo-identity": "tsx scripts/approve-repo-identity.ts",
     "scan-repos": "tsx scripts/scan-repo-identities.ts",
     "enrich-github-repos": "tsx scripts/enrich-github-repos.ts",
     "build-graphs": "tsx scripts/build-graphs.ts"

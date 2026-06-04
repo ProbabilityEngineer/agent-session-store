@@ -54,7 +54,7 @@ try {
 	});
 	const activeTimeMetrics = db.prepare("SELECT id, kind, path, generated_at, generator, metadata_json FROM artifacts WHERE kind = 'active_time_metric' ORDER BY id").all().map((row: any) => {
 		const metadata = parseJson<Record<string, any>>(row.metadata_json, {});
-		return { id: row.id, kind: row.kind, path: row.path, generatedAt: row.generated_at, generator: row.generator, project: metadata.project, activeMinutes: metadata.activeMinutes ?? 0, activeHours: metadata.activeHours ?? 0, workBlockCount: metadata.workBlockCount ?? 0, sessionCount: metadata.sessionCount ?? 0, sessionIds: metadata.sessionIds ?? [], providers: metadata.providers ?? [], idleThresholdMinutes: metadata.idleThresholdMinutes, confidence: metadata.confidence ?? "derived", provenance: metadata.source ?? row.generator, metadata };
+		return { id: row.id, kind: row.kind, path: row.path, generatedAt: row.generated_at, generator: row.generator, project: metadata.project, repoIdentityId: metadata.repoIdentityId, displayName: metadata.displayName, contributingPaths: metadata.contributingPaths ?? [], activeMinutes: metadata.activeMinutes ?? 0, activeHours: metadata.activeHours ?? 0, workBlockCount: metadata.workBlockCount ?? 0, sessionCount: metadata.sessionCount ?? 0, sessionIds: metadata.sessionIds ?? [], providers: metadata.providers ?? [], idleThresholdMinutes: metadata.idleThresholdMinutes, confidence: metadata.confidence ?? "derived", provenance: metadata.source ?? row.generator, metadata };
 	});
 	const temporalActivitySpans = sessions.flatMap((session: any) => {
 		const start = session.startTimestamp ?? session.firstSeenAt;

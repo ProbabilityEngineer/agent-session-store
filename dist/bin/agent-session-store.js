@@ -18,6 +18,8 @@ const scripts = {
     "export-graph": ["scripts/export-graph-json.js"],
     "scan-repos": ["scripts/scan-repo-identities.js"],
     "repo-identities": ["scripts/repo-identity-report.js"],
+    "repo-identity-candidates": ["scripts/repo-identity-candidates.js"],
+    "approve-repo-identity": ["scripts/approve-repo-identity.js"],
     "backup-readiness": ["scripts/backup-readiness-report.js"],
     "inventory-buckets": ["scripts/inventory-session-buckets.js"],
     "inventory-providers": ["scripts/inventory-provider-archive.js"],

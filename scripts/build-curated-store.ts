@@ -440,7 +440,8 @@ function deriveVisitRowMetrics(store: Store) {
 function deriveActiveTimeMetrics(store: Store, seen: Seen, generatedAt: string) {
 	const eventsBySession = new Map<string, Event[]>();
 	for (const event of store.events) if (event.timestamp && event.rowNumber) { const list = eventsBySession.get(event.sessionId) ?? []; list.push(event); eventsBySession.set(event.sessionId, list); }
-	const byProject = new Map<string, { activeMinutes: number; workBlockCount: number; sessionIds: string[]; providers: Set<string> }>();
+	const repoNames = new Map(store.repoIdentities.map((repo) => [repo.id, repo.displayName ?? repo.stableName]));
+	const byProject = new Map<string, { activeMinutes: number; workBlockCount: number; sessionIds: string[]; providers: Set<string>; paths: Set<string>; repoIdentityId?: string; displayName?: string }>();
 	for (const session of store.sessions) {
 		const events = eventsBySession.get(session.id) ?? [];
 		if (!events.length) continue;
@@ -453,15 +454,18 @@ function deriveActiveTimeMetrics(store: Store, seen: Seen, generatedAt: string) 
 		if (!visitEvents.length) continue;
 		const metric = activeTimeFromEvents(visitEvents);
 		session.metadata = { ...metadata, activeTime: { ...metric, rowRange: { arrivalRow, departureRow }, source: "visit-row-event-timestamp-gaps", confidence: metric.eventCount > 1 ? "medium" : "low" } };
-		const project = str(metadata.cwd) ?? str(metadata.repoIdentityId) ?? session.provider;
-		const agg = byProject.get(project) ?? { activeMinutes: 0, workBlockCount: 0, sessionIds: [], providers: new Set<string>() };
+		const repoIdentityId = str(metadata.repoIdentityId);
+		const cwd = str(metadata.cwd);
+		const project = repoIdentityId ?? cwd ?? session.provider;
+		const agg = byProject.get(project) ?? { activeMinutes: 0, workBlockCount: 0, sessionIds: [], providers: new Set<string>(), paths: new Set<string>(), repoIdentityId, displayName: repoIdentityId ? repoNames.get(repoIdentityId) : undefined };
+		if (cwd) agg.paths.add(cwd);
 		agg.activeMinutes += metric.activeMinutes;
 		agg.workBlockCount += metric.workBlockCount;
 		agg.sessionIds.push(session.id);
 		agg.providers.add(session.provider);
 		byProject.set(project, agg);
 	}
-	for (const [project, metric] of byProject) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "active-time", project), kind: "active_time_metric", path: `derived:active-time:${project}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { project, activeMinutes: metric.activeMinutes, activeHours: +(metric.activeMinutes / 60).toFixed(2), workBlockCount: metric.workBlockCount, sessionCount: metric.sessionIds.length, sessionIds: metric.sessionIds, providers: [...metric.providers].sort(), idleThresholdMinutes: 30, source: "visit-row-event-timestamp-gaps", confidence: "medium" } });
+	for (const [project, metric] of byProject) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "active-time", project), kind: "active_time_metric", path: `derived:active-time:${project}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { project, repoIdentityId: metric.repoIdentityId, displayName: metric.displayName, contributingPaths: [...metric.paths].sort(), activeMinutes: metric.activeMinutes, activeHours: +(metric.activeMinutes / 60).toFixed(2), workBlockCount: metric.workBlockCount, sessionCount: metric.sessionIds.length, sessionIds: metric.sessionIds, providers: [...metric.providers].sort(), idleThresholdMinutes: 30, source: "visit-row-event-timestamp-gaps", confidence: metric.repoIdentityId ? "high" : "medium" } });
 }
 
 function deriveDuplicateCandidates(store: Store, seen: Seen) {
