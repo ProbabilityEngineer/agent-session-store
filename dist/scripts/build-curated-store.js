@@ -314,6 +314,21 @@ function pushUnique(array, seen, item) { if (!seen.has(item.id)) {
     array.push(item);
 } }
 function json(value) { return JSON.stringify(value ?? {}); }
+async function rawSourceManifest(store) {
+    const entries = [];
+    for (const source of store.sources)
+        entries.push({ path: source.uri, provider: source.provider, kind: source.kind, status: "source-root", sourceId: source.id, metadata: source.metadata });
+    for (const observation of store.sessionObservations)
+        entries.push({ path: observation.path, provider: store.sessions.find((session) => session.id === observation.sessionId)?.provider, kind: "session_observation", status: "imported", size: observation.fileSize, mtime: observation.fileMtime, sha256: observation.contentSha256, sessionId: observation.sessionId, observationId: observation.id, sourceId: observation.sourceId, metadata: { providerSessionId: observation.providerSessionId, lineCount: observation.lineCount } });
+    for (const artifact of store.artifacts)
+        entries.push({ path: artifact.path, kind: artifact.kind, status: "artifact", sha256: artifact.inputHash, artifactId: artifact.id, metadata: artifact.metadata });
+    return entries.sort((a, b) => a.path.localeCompare(b.path) || a.kind.localeCompare(b.kind));
+}
+function rawSourceManifestMarkdown(entries) {
+    const byStatus = entries.reduce((acc, entry) => { acc[entry.status] = (acc[entry.status] ?? 0) + 1; return acc; }, {});
+    const byProvider = entries.reduce((acc, entry) => { const key = entry.provider ?? "(none)"; acc[key] = (acc[key] ?? 0) + 1; return acc; }, {});
+    return [`# Raw source manifest`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `By status: ${Object.entries(byStatus).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `By provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, ``, `## Imported/session artifacts`, ``, `| Status | Provider | Kind | Path | Size | SHA-256 |`, `| --- | --- | --- | --- | ---: | --- |`, ...entries.filter((entry) => entry.status !== "source-root").slice(0, 2000).map((entry) => `| ${entry.status} | ${entry.provider ?? ""} | ${entry.kind} | \`${entry.path}\` | ${entry.size ?? ""} | ${entry.sha256 ?? ""} |`)].join("\n");
+}
 class DisjointSet {
     parents = new Map();
     find(value) {
@@ -1093,6 +1108,9 @@ async function main() {
     debug("writing exports");
     await writeFile(join(storeDir, "session-store.export.json"), out);
     await writeFile(join(graphDir, "curated-store.json"), out);
+    const rawManifest = await rawSourceManifest(store);
+    await writeFile(join(storeDir, "raw-source-manifest.json"), JSON.stringify({ generatedAt, entries: rawManifest }, null, 2) + "\n");
+    await writeFile(join(storeDir, "raw-source-manifest.md"), rawSourceManifestMarkdown(rawManifest) + "\n");
     debug("writing sqlite");
     replaceSqlite(sqlitePath, store);
     console.log(`Wrote ${store.sessions.length} sessions, ${store.edges.length} edges, ${store.evidence.length} evidence records to ${join(storeDir, "session-store.export.json")}`);

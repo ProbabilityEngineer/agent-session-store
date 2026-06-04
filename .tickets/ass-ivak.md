@@ -1,6 +1,6 @@
 ---
 id: ass-ivak
-status: open
+status: closed
 deps: []
 links: []
 created: 2026-06-03T03:30:19Z
