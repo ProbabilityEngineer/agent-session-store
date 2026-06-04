@@ -367,6 +367,52 @@ function rawSourceManifestMarkdown(entries: RawSourceManifestEntry[]) {
 	return [`# Raw source manifest`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `By status: ${Object.entries(byStatus).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `By provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, ``, `## Imported/session artifacts`, ``, `| Status | Provider | Kind | Path | Size | SHA-256 |`, `| --- | --- | --- | --- | ---: | --- |`, ...entries.filter((entry) => entry.status !== "source-root").slice(0, 2000).map((entry) => `| ${entry.status} | ${entry.provider ?? ""} | ${entry.kind} | \`${entry.path}\` | ${entry.size ?? ""} | ${entry.sha256 ?? ""} |`)].join("\n");
 }
 
+function rowAtOrBefore(events: Event[], timestamp?: string) {
+	if (!timestamp) return undefined;
+	let row: number | undefined;
+	for (const event of events) if (event.timestamp && event.rowNumber && event.timestamp <= timestamp) row = Math.max(row ?? 0, event.rowNumber);
+	return row;
+}
+
+function deriveVisitRowMetrics(store: Store) {
+	const eventsBySession = new Map<string, Event[]>();
+	for (const event of store.events) {
+		const list = eventsBySession.get(event.sessionId) ?? [];
+		list.push(event);
+		eventsBySession.set(event.sessionId, list);
+	}
+	for (const list of eventsBySession.values()) list.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? "") || a.ordinal - b.ordinal);
+	for (const edge of store.edges) {
+		const sourceEvents = eventsBySession.get(edge.sourceSessionId) ?? [];
+		const targetEvents = eventsBySession.get(edge.targetSessionId) ?? [];
+		const sourceRowAtMove = rowAtOrBefore(sourceEvents, edge.timestamp);
+		const targetRowAtMove = rowAtOrBefore(targetEvents, edge.timestamp);
+		if (sourceRowAtMove == null && targetRowAtMove == null) continue;
+		edge.metadata = { ...(edge.metadata ?? {}), rowMetrics: { sourceRowAtMove, targetRowAtMove, timestamp: edge.timestamp, confidence: sourceRowAtMove != null || targetRowAtMove != null ? "medium" : "low", source: "event-row-timestamps" } };
+	}
+	const incomingBySession = new Map<string, Edge[]>();
+	const outgoingBySession = new Map<string, Edge[]>();
+	for (const edge of store.edges) {
+		if (edge.sourceSessionId === edge.targetSessionId) continue;
+		const incoming = incomingBySession.get(edge.targetSessionId) ?? [];
+		incoming.push(edge); incomingBySession.set(edge.targetSessionId, incoming);
+		const outgoing = outgoingBySession.get(edge.sourceSessionId) ?? [];
+		outgoing.push(edge); outgoingBySession.set(edge.sourceSessionId, outgoing);
+	}
+	for (const session of store.sessions) {
+		const events = eventsBySession.get(session.id) ?? [];
+		if (!events.length) continue;
+		const incoming = (incomingBySession.get(session.id) ?? []).sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""))[0];
+		const outgoing = (outgoingBySession.get(session.id) ?? []).sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""))[0];
+		const arrivalRow = incoming ? rowAtOrBefore(events, incoming.timestamp) : undefined;
+		const departureRow = outgoing ? rowAtOrBefore(events, outgoing.timestamp) : undefined;
+		const visitRows = arrivalRow != null && departureRow != null && departureRow >= arrivalRow ? departureRow - arrivalRow : undefined;
+		if (arrivalRow == null && departureRow == null) continue;
+		const metadata = asObj(session.metadata) ?? {};
+		session.metadata = { ...metadata, visitRowMetrics: { arrivalRow, departureRow, visitRows, arrivalTimestamp: incoming?.timestamp, departureTimestamp: outgoing?.timestamp, confidence: visitRows != null ? "medium" : "low", source: "event-row-timestamps" } };
+	}
+}
+
 function deriveDuplicateCandidates(store: Store, seen: Seen) {
 	const byHash = new Map<string, Session[]>();
 	for (const session of store.sessions) if (session.contentSha256) { const list = byHash.get(session.contentSha256) ?? []; list.push(session); byHash.set(session.contentSha256, list); }
@@ -920,6 +966,8 @@ async function main() {
 	debug(`after cross-provider continuity: ${store.edges.length} edges`);
 	deriveAdditionalMetadata(store, seen, generatedAt);
 	debug("after additional metadata");
+	deriveVisitRowMetrics(store);
+	debug("after visit row metrics");
 	deriveDuplicateCandidates(store, seen);
 	debug("after duplicate candidates");
 

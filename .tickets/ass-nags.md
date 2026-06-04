@@ -1,6 +1,6 @@
 ---
 id: ass-nags
-status: open
+status: in_progress
 deps: []
 links: []
 created: 2026-06-03T03:27:11Z
@@ -17,3 +17,9 @@ Add active-time reconstruction by grouping timestamped events into work blocks p
 
 SQLite/export includes active time metrics per repo/project, provider, agent/lineage, and session where possible; idle threshold is recorded; reports distinguish calendar span from active time; low timestamp coverage is flagged; no raw transcript content is required.
 
+
+## Notes
+
+**2026-06-04T22:49:08Z**
+
+Attempted session/project active-time derivation from event timestamp gaps. Result was misleading: copied/relocated Pi session files carry prior event history into later repo buckets, so naïvely aggregating each session file by current cwd double-counts old work and produced absurd project totals (hundreds of hours for recent repos). Reverted the active-time code. This ticket should wait for visit segmentation/arrival-departure row metrics (ass-2avj) and duplicate/copy handling before exporting project active hours.
