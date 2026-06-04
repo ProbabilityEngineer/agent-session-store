@@ -374,6 +374,19 @@ function rowAtOrBefore(events: Event[], timestamp?: string) {
 	return row;
 }
 
+function activeTimeFromEvents(events: Event[], idleThresholdMs = 30 * 60 * 1000) {
+	const times = [...new Set(events.map((event) => event.timestamp ? Date.parse(event.timestamp) : NaN).filter(Number.isFinite))].sort((a, b) => a - b);
+	if (!times.length) return { activeMinutes: 0, workBlockCount: 0, idleThresholdMinutes: idleThresholdMs / 60000, eventCount: 0 };
+	let activeMs = 0;
+	let blocks = 1;
+	for (let index = 1; index < times.length; index++) {
+		const gap = times[index] - times[index - 1];
+		if (gap > 0 && gap <= idleThresholdMs) activeMs += gap;
+		else if (gap > idleThresholdMs) blocks++;
+	}
+	return { activeMinutes: Math.round(activeMs / 60000), activeHours: +(activeMs / 3600000).toFixed(2), workBlockCount: blocks, idleThresholdMinutes: idleThresholdMs / 60000, firstWorkedAt: new Date(times[0]).toISOString(), lastWorkedAt: new Date(times[times.length - 1]).toISOString(), eventCount: times.length };
+}
+
 function deriveVisitRowMetrics(store: Store) {
 	const eventsBySession = new Map<string, Event[]>();
 	for (const event of store.events) {
@@ -411,6 +424,33 @@ function deriveVisitRowMetrics(store: Store) {
 		const metadata = asObj(session.metadata) ?? {};
 		session.metadata = { ...metadata, visitRowMetrics: { arrivalRow, departureRow, visitRows, arrivalTimestamp: incoming?.timestamp, departureTimestamp: outgoing?.timestamp, confidence: visitRows != null ? "medium" : "low", source: "event-row-timestamps" } };
 	}
+}
+
+function deriveActiveTimeMetrics(store: Store, seen: Seen, generatedAt: string) {
+	const eventsBySession = new Map<string, Event[]>();
+	for (const event of store.events) if (event.timestamp && event.rowNumber) { const list = eventsBySession.get(event.sessionId) ?? []; list.push(event); eventsBySession.set(event.sessionId, list); }
+	const byProject = new Map<string, { activeMinutes: number; workBlockCount: number; sessionIds: string[]; providers: Set<string> }>();
+	for (const session of store.sessions) {
+		const events = eventsBySession.get(session.id) ?? [];
+		if (!events.length) continue;
+		const metadata = asObj(session.metadata) ?? {};
+		const visit = asObj(metadata.visitRowMetrics);
+		const arrivalRow = num(visit?.arrivalRow) ?? 1;
+		const departureRow = num(visit?.departureRow) ?? Math.max(...events.map((event) => event.rowNumber ?? 0));
+		if (!Number.isFinite(arrivalRow) || !Number.isFinite(departureRow) || departureRow < arrivalRow) continue;
+		const visitEvents = events.filter((event) => (event.rowNumber ?? 0) >= arrivalRow && (event.rowNumber ?? 0) <= departureRow);
+		if (!visitEvents.length) continue;
+		const metric = activeTimeFromEvents(visitEvents);
+		session.metadata = { ...metadata, activeTime: { ...metric, rowRange: { arrivalRow, departureRow }, source: "visit-row-event-timestamp-gaps", confidence: metric.eventCount > 1 ? "medium" : "low" } };
+		const project = str(metadata.cwd) ?? str(metadata.repoIdentityId) ?? session.provider;
+		const agg = byProject.get(project) ?? { activeMinutes: 0, workBlockCount: 0, sessionIds: [], providers: new Set<string>() };
+		agg.activeMinutes += metric.activeMinutes;
+		agg.workBlockCount += metric.workBlockCount;
+		agg.sessionIds.push(session.id);
+		agg.providers.add(session.provider);
+		byProject.set(project, agg);
+	}
+	for (const [project, metric] of byProject) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "active-time", project), kind: "active_time_metric", path: `derived:active-time:${project}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { project, activeMinutes: metric.activeMinutes, activeHours: +(metric.activeMinutes / 60).toFixed(2), workBlockCount: metric.workBlockCount, sessionCount: metric.sessionIds.length, sessionIds: metric.sessionIds, providers: [...metric.providers].sort(), idleThresholdMinutes: 30, source: "visit-row-event-timestamp-gaps", confidence: "medium" } });
 }
 
 function deriveDuplicateCandidates(store: Store, seen: Seen) {
@@ -968,6 +1008,8 @@ async function main() {
 	debug("after additional metadata");
 	deriveVisitRowMetrics(store);
 	debug("after visit row metrics");
+	deriveActiveTimeMetrics(store, seen, generatedAt);
+	debug("after active time metrics");
 	deriveDuplicateCandidates(store, seen);
 	debug("after duplicate candidates");
 

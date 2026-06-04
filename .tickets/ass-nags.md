@@ -1,6 +1,6 @@
 ---
 id: ass-nags
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-06-03T03:27:11Z
