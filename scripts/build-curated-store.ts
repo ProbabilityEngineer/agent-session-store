@@ -367,6 +367,19 @@ function rawSourceManifestMarkdown(entries: RawSourceManifestEntry[]) {
 	return [`# Raw source manifest`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `By status: ${Object.entries(byStatus).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `By provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, ``, `## Imported/session artifacts`, ``, `| Status | Provider | Kind | Path | Size | SHA-256 |`, `| --- | --- | --- | --- | ---: | --- |`, ...entries.filter((entry) => entry.status !== "source-root").slice(0, 2000).map((entry) => `| ${entry.status} | ${entry.provider ?? ""} | ${entry.kind} | \`${entry.path}\` | ${entry.size ?? ""} | ${entry.sha256 ?? ""} |`)].join("\n");
 }
 
+function validationReport(store: Store) {
+	const byProvider = store.sessions.reduce<Record<string, number>>((acc, session) => { acc[session.provider] = (acc[session.provider] ?? 0) + 1; return acc; }, {});
+	const eventByProvider = store.events.reduce<Record<string, number>>((acc, event) => { acc[event.provider] = (acc[event.provider] ?? 0) + 1; return acc; }, {});
+	const coverageRows = store.sessions.map((session) => ({ session, coverage: asObj(session.metadata)?.timestampCoverage as Json | undefined })).filter((row) => row.coverage);
+	const lowCoverage = coverageRows.filter(({ coverage }) => (num(coverage?.coverage) ?? 0) < 0.5);
+	const duplicateHashes = new Map<string, Session[]>();
+	for (const session of store.sessions) if (session.contentSha256) { const list = duplicateHashes.get(session.contentSha256) ?? []; list.push(session); duplicateHashes.set(session.contentSha256, list); }
+	const duplicateGroups = [...duplicateHashes.values()].filter((group) => group.length > 1);
+	const sessionsWithoutRepo = store.sessions.filter((session) => !asObj(session.metadata)?.cwd && !asObj(session.metadata)?.repoIdentityId);
+	const lines = [`# Build validation report`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `Sessions: ${store.sessions.length}`, `Session observations: ${store.sessionObservations.length}`, `SQLite event rows: ${store.events.length}`, `Edges: ${store.edges.length}`, `Evidence records: ${store.evidence.length}`, ``, `Sessions by provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `Events by provider: ${Object.entries(eventByProvider).map(([k, v]) => `${k}: ${v}`).join(", ") || "none"}`, ``, `## Timestamp coverage`, ``, `Sessions with coverage metadata: ${coverageRows.length}`, `Low coverage sessions (<50% timestamped rows): ${lowCoverage.length}`, ``, `| Provider | Session | Coverage | Timestamped / Total |`, `| --- | --- | ---: | ---: |`, ...lowCoverage.slice(0, 50).map(({ session, coverage }) => `| ${session.provider} | ${session.id} | ${((num(coverage?.coverage) ?? 0) * 100).toFixed(1)}% | ${coverage?.timestampedRows ?? 0} / ${coverage?.totalRows ?? 0} |`), ``, `## Duplicate candidates`, ``, `Duplicate content-hash groups: ${duplicateGroups.length}`, ``, ...duplicateGroups.slice(0, 25).map((group) => `- ${group[0]?.contentSha256}: ${group.map((session) => `${session.provider}:${session.providerSessionId ?? session.id}`).join(", ")}`), ``, `## Repo/project identity`, ``, `Sessions without cwd/repo identity metadata: ${sessionsWithoutRepo.length}`];
+	return lines.join("\n");
+}
+
 class DisjointSet {
 	parents = new Map<string, string>();
 	find(value: string): string {
@@ -913,6 +926,7 @@ async function main() {
 	const rawManifest = await rawSourceManifest(store);
 	await writeFile(join(storeDir, "raw-source-manifest.json"), JSON.stringify({ generatedAt, entries: rawManifest }, null, 2) + "\n");
 	await writeFile(join(storeDir, "raw-source-manifest.md"), rawSourceManifestMarkdown(rawManifest) + "\n");
+	await writeFile(join(storeDir, "build-validation.md"), validationReport(store) + "\n");
 	debug("writing sqlite");
 	replaceSqlite(sqlitePath, store);
 	console.log(`Wrote ${store.sessions.length} sessions, ${store.edges.length} edges, ${store.evidence.length} evidence records to ${join(storeDir, "session-store.export.json")}`);
