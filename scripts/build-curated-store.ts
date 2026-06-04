@@ -226,6 +226,7 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 	let lastEventAt: string | undefined;
 	let cwd: string | undefined;
 	let displayName: string | undefined;
+	let timestampedRows = 0;
 	let compactionEventCount = 0;
 	let summaryEventCount = 0;
 	let compactedLineCount = 0;
@@ -254,6 +255,7 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 			try {
 				const row = JSON.parse(line) as Json;
 				const ts = rowTimestamp(row);
+				if (ts) timestampedRows++;
 				events.push({ id: id("event", sessionId, String(lineCount), sha(line)), sessionId, observationId: id("obs", sourceId, path), sourceId, provider: "pi", providerEventId: rowProviderEventId(row), eventType: eventType(row), timestamp: ts, ordinal: lineCount, rowNumber: lineCount, role: rowRole(row), toolName: rowToolName(row), byteOffset, byteCount, contentSha256: sha(line), metadata: { privacyStatus: "metadata-only" } });
 				if (ts) { firstEventAt ??= ts; lastEventAt = ts; }
 				const candidate = rowCwd(row);
@@ -274,9 +276,10 @@ async function sessionObservation(path: string, sourceId: string): Promise<{ ses
 		}
 	}
 	const compactionMetadata = compactionEventCount ? { eventCount: compactionEventCount, summaryEventCount, compactedLineCount, compactedCharCount, firstCompactionAt, lastCompactionAt, summaryHashes: [...compactionSummaryHashes].sort(), sampleLines: compactionSampleLines, provenance: "pi-session-jsonl", privacyStatus: "metadata-only" } : undefined;
+	const timestampCoverage = { timestampedRows, totalRows: lineCount, coverage: lineCount ? timestampedRows / lineCount : 0, firstEventAt, lastEventAt, source: "event-row-timestamps" };
 	return {
-		session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
-		observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
+		session: { id: sessionId, provider: "pi", providerSessionId, canonicalKey: path, firstSeenAt: firstEventAt ?? sessionStartTimestamp(path), lastSeenAt: lastEventAt, startTimestamp: sessionStartTimestamp(path), endTimestamp: lastEventAt, lineCount, byteCount: fileSize, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), timestampCoverage, ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
+		observation: { id: id("obs", sourceId, path), sessionId, sourceId, path, providerSessionId, fileBirthtime, fileMtime, fileSize, lineCount, firstEventAt, lastEventAt, contentSha256, metadata: { ...(cwd ? { cwd } : {}), ...(displayName ? { displayName } : {}), timestampCoverage, ...(compactionMetadata ? { compaction: compactionMetadata } : {}) } },
 		events,
 	};
 }
@@ -286,9 +289,10 @@ async function fileStats(path: string) {
 	return { raw, fileSize: st.size, fileBirthtime: st.birthtime.toISOString(), fileMtime: st.mtime.toISOString(), contentSha256: sha(raw), lineCount: raw.split("\n").filter((line) => line.trim()).length };
 }
 
-function externalSession(path: string, sourceId: string, provider: string, providerSessionId: string, meta: { cwd?: string; title?: string; start?: string; end?: string; lineCount?: number; byteCount?: number; contentSha256?: string; fileBirthtime?: string; fileMtime?: string; eventCounts?: Record<string, number>; extra?: Json }): { session: Session; observation: SessionObservation } {
+function externalSession(path: string, sourceId: string, provider: string, providerSessionId: string, meta: { cwd?: string; title?: string; start?: string; end?: string; lineCount?: number; byteCount?: number; contentSha256?: string; fileBirthtime?: string; fileMtime?: string; eventCounts?: Record<string, number>; timestampedRows?: number; extra?: Json }): { session: Session; observation: SessionObservation } {
 	const sid = id("session", provider, providerSessionId, path);
-	const metadata = { ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.title ? { displayName: meta.title } : {}), ...(meta.eventCounts ? { eventCounts: meta.eventCounts } : {}), ...(meta.extra ?? {}) };
+	const timestampCoverage = { timestampedRows: meta.timestampedRows ?? 0, totalRows: meta.lineCount ?? 0, coverage: meta.lineCount ? (meta.timestampedRows ?? 0) / meta.lineCount : 0, firstEventAt: meta.start, lastEventAt: meta.end, source: "provider-import-timestamps" };
+	const metadata = { ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.title ? { displayName: meta.title } : {}), timestampCoverage, ...(meta.eventCounts ? { eventCounts: meta.eventCounts } : {}), ...(meta.extra ?? {}) };
 	return {
 		session: { id: sid, provider, providerSessionId, canonicalKey: path, firstSeenAt: meta.start, lastSeenAt: meta.end, startTimestamp: meta.start, endTimestamp: meta.end, lineCount: meta.lineCount, byteCount: meta.byteCount, contentSha256: meta.contentSha256, metadata },
 		observation: { id: id("obs", sourceId, path), sessionId: sid, sourceId, path, providerSessionId, observedAt: new Date().toISOString(), snapshotLabel: "external-import", fileBirthtime: meta.fileBirthtime, fileMtime: meta.fileMtime, fileSize: meta.byteCount, lineCount: meta.lineCount, firstEventAt: meta.start, lastEventAt: meta.end, contentSha256: meta.contentSha256, metadata },
@@ -375,9 +379,9 @@ async function addExternalProviderSessions(store: Store, seen: { sources: Set<st
 		for (const path of await walkFiles(codexRoot, (p) => p.endsWith(".jsonl"))) {
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
 			let sid = basename(path).match(/(019[0-9a-f-]{32,})/)?.[1] ?? basename(path).replace(/\.jsonl$/, "");
-			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
-			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row) ?? str(asObj(row.payload)?.timestamp); start = minTs(start, ts); end = maxTs(end, ts); const payload = asObj(row.payload); cwd ??= str(payload?.cwd) ?? str(asObj(payload?.turn_context)?.cwd); title ??= str(payload?.title); sid = str(payload?.id) ?? sid; } catch {} }
-			addParsed("codex", codexSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; let timestampedRows = 0; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row) ?? str(asObj(row.payload)?.timestamp); if (ts) timestampedRows++; start = minTs(start, ts); end = maxTs(end, ts); const payload = asObj(row.payload); cwd ??= str(payload?.cwd) ?? str(asObj(payload?.turn_context)?.cwd); title ??= str(payload?.title); sid = str(payload?.id) ?? sid; } catch {} }
+			addParsed("codex", codexSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows });
 		}
 		// oh-my-pi JSONL sessions.
 		const ompRoot = join(base, "omp", "agent", "sessions");
@@ -385,27 +389,27 @@ async function addExternalProviderSessions(store: Store, seen: { sources: Set<st
 		for (const path of await walkFiles(ompRoot, (p) => p.endsWith(".jsonl"))) {
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
 			let sid = basename(path).match(/_([0-9a-f]{16})\.jsonl$/)?.[1] ?? basename(path).replace(/\.jsonl$/, "");
-			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
-			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.title); } } catch {} }
-			addParsed("oh-my-pi", ompSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+			let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; let timestampedRows = 0; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); if (ts) timestampedRows++; start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.title); } } catch {} }
+			addParsed("oh-my-pi", ompSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows });
 		}
 		// Factory JSONL sessions.
 		const factoryRoot = join(base, "factory", "sessions");
 		const factorySource = addSource("factory", "session_archive", factoryRoot, "Factory sessions");
 		for (const path of await walkFiles(factoryRoot, (p) => p.endsWith(".jsonl"))) {
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
-			let sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
-			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session_start") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.sessionTitle) ?? str(row.title); } } catch {} }
-			addParsed("factory", factorySource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, extra: { trivial: Object.keys(counts).length === 1 && counts.session_start === 1 } });
+			let sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; let timestampedRows = 0; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); if (ts) timestampedRows++; start = minTs(start, ts); end = maxTs(end, ts); if (row.type === "session_start") { sid = str(row.id) ?? sid; cwd ??= str(row.cwd); title ??= str(row.sessionTitle) ?? str(row.title); } } catch {} }
+			addParsed("factory", factorySource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows, extra: { trivial: Object.keys(counts).length === 1 && counts.session_start === 1 } });
 		}
 		// Claude transcripts.
 		const claudeRoot = join(base, "claude");
 		const claudeSource = addSource("claude", "session_archive", claudeRoot, "Claude sessions");
 		for (const path of await walkFiles(join(claudeRoot, "transcripts"), (p) => p.endsWith(".jsonl"))) {
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
-			const sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; const counts: Record<string, number> = {};
-			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); start = minTs(start, ts); end = maxTs(end, ts); cwd ??= rowCwd(row) ?? str(asObj(row.tool_input)?.path); title ??= str(row.summary); } catch {} }
-			addParsed("claude", claudeSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts });
+			const sid = basename(path).replace(/\.jsonl$/, ""); let cwd: string | undefined; let title: string | undefined; let start: string | undefined; let end: string | undefined; let timestampedRows = 0; const counts: Record<string, number> = {};
+			for (const line of fs.raw.split("\n")) { if (!line.trim()) continue; try { const row = JSON.parse(line) as Json; counts[eventType(row)] = (counts[eventType(row)] ?? 0) + 1; const ts = rowTimestamp(row); if (ts) timestampedRows++; start = minTs(start, ts); end = maxTs(end, ts); cwd ??= rowCwd(row) ?? str(asObj(row.tool_input)?.path); title ??= str(row.summary); } catch {} }
+			addParsed("claude", claudeSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows });
 		}
 		// Rovo Dev sessions.
 		const rovoRoot = join(base, "rovodev", "sessions");
@@ -420,9 +424,9 @@ async function addExternalProviderSessions(store: Store, seen: { sources: Set<st
 		const lateSource = addSource("late", "session_archive", lateRoot, "Late sessions");
 		for (const path of await walkFiles(lateRoot, (p) => /^session-.*\.json$/.test(basename(p)) && !p.endsWith(".meta.json"))) {
 			const fs = await fileStats(path).catch(() => undefined); if (!fs) continue;
-			const rows = JSON.parse(fs.raw) as Json[]; const meta = await readJson<Json>(path.replace(/\.json$/, ".meta.json")); const counts: Record<string, number> = {};
-			for (const row of Array.isArray(rows) ? rows : []) counts[str(row.role) ?? "unknown"] = (counts[str(row.role) ?? "unknown"] ?? 0) + 1;
-			addParsed("late", lateSource, path, str(meta?.id) ?? basename(path).replace(/\.json$/, ""), { title: str(meta?.title), start: str(meta?.created_at), end: str(meta?.last_updated), lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, extra: { messageCount: num(meta?.message_count), trivial: (num(meta?.message_count) ?? 0) <= 3 } });
+			const rows = JSON.parse(fs.raw) as Json[]; const meta = await readJson<Json>(path.replace(/\.json$/, ".meta.json")); const counts: Record<string, number> = {}; let timestampedRows = 0;
+			for (const row of Array.isArray(rows) ? rows : []) { counts[str(row.role) ?? "unknown"] = (counts[str(row.role) ?? "unknown"] ?? 0) + 1; if (rowTimestamp(row)) timestampedRows++; }
+			addParsed("late", lateSource, path, str(meta?.id) ?? basename(path).replace(/\.json$/, ""), { title: str(meta?.title), start: str(meta?.created_at), end: str(meta?.last_updated), lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows, extra: { messageCount: num(meta?.message_count), trivial: (num(meta?.message_count) ?? 0) <= 3 } });
 		}
 		// OpenCode multi-file sessions.
 		const ocRoot = join(base, "opencode-sessions", "storage");
