@@ -33,6 +33,7 @@
     "build-store": "tsx scripts/build-curated-store.ts",
     "backup-readiness": "tsx scripts/backup-readiness-report.ts",
     "inventory-buckets": "tsx scripts/inventory-session-buckets.ts",
+    "inventory-providers": "tsx scripts/inventory-provider-archive.ts",
     "logical-threads": "tsx scripts/logical-thread-report.ts",
     "export-graph": "tsx scripts/export-graph-json.ts",
     "repo-identities": "tsx scripts/repo-identity-report.ts",

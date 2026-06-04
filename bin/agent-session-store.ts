@@ -23,6 +23,7 @@ const scripts: Record<string, string[]> = {
 	"repo-identities": ["scripts/repo-identity-report.js"],
 	"backup-readiness": ["scripts/backup-readiness-report.js"],
 	"inventory-buckets": ["scripts/inventory-session-buckets.js"],
+	"inventory-providers": ["scripts/inventory-provider-archive.js"],
 	"logical-threads": ["scripts/logical-thread-report.js"],
 	"build-graphs": ["scripts/build-graphs.js"],
 	"validate-timeline": ["scripts/validate-session-timeline.js"],
