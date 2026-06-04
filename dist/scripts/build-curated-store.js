@@ -90,8 +90,17 @@ async function readJson(path) { if (!(await exists(path)))
 function rowTimestamp(row) { for (const key of ["timestamp", "ts", "createdAt", "created_at"])
     if (typeof row[key] === "string" && /^\d{4}-\d{2}-\d{2}T/.test(row[key]))
         return row[key]; const msg = row.message; return typeof msg?.timestamp === "string" ? msg.timestamp : undefined; }
-function rowCwd(row) { if (typeof row.cwd === "string")
-    return row.cwd; const session = row.session; return typeof session?.cwd === "string" ? session.cwd : undefined; }
+function normalizeRepoPath(path) {
+    return path
+        .replace(/^\/users\/sam\//, "/Users/sam/")
+        .replace(/^\/Users\/sam\/(?:Users|users)\/sam\//, "/Users/sam/")
+        .replace(/^\/Users\/sam\/users-sam-git-agents-/, "/Users/sam/git/agents/")
+        .replace(/^users-sam-git-agents-/, "/Users/sam/git/agents/")
+        .replace(/^\/Users\/sam\/users-sam-git-/, "/Users/sam/git/")
+        .replace(/^users-sam-git-/, "/Users/sam/git/")
+        .replace(/^users-sam-/, "/Users/sam/");
+}
+function rowCwd(row) { const cwd = typeof row.cwd === "string" ? row.cwd : undefined; const session = row.session; const value = cwd ?? (typeof session?.cwd === "string" ? session.cwd : undefined); return value ? normalizeRepoPath(value) : undefined; }
 function asObj(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : undefined; }
 function str(value) { return typeof value === "string" && value.trim() ? value : undefined; }
 function num(value) { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
@@ -241,7 +250,8 @@ async function fileStats(path) {
 function externalSession(path, sourceId, provider, providerSessionId, meta) {
     const sid = id("session", provider, providerSessionId, path);
     const timestampCoverage = { timestampedRows: meta.timestampedRows ?? 0, totalRows: meta.lineCount ?? 0, coverage: meta.lineCount ? (meta.timestampedRows ?? 0) / meta.lineCount : 0, firstEventAt: meta.start, lastEventAt: meta.end, source: "provider-import-timestamps" };
-    const metadata = { ...(meta.cwd ? { cwd: meta.cwd } : {}), ...(meta.title ? { displayName: meta.title } : {}), timestampCoverage, ...(meta.eventCounts ? { eventCounts: meta.eventCounts } : {}), ...(meta.extra ?? {}) };
+    const normalizedCwd = meta.cwd ? normalizeRepoPath(meta.cwd) : undefined;
+    const metadata = { ...(normalizedCwd ? { cwd: normalizedCwd, originalCwd: normalizedCwd === meta.cwd ? undefined : meta.cwd, repoIdentityConfidence: "path-normalized" } : {}), ...(meta.title ? { displayName: meta.title } : {}), timestampCoverage, ...(meta.eventCounts ? { eventCounts: meta.eventCounts } : {}), ...(meta.extra ?? {}) };
     return {
         session: { id: sid, provider, providerSessionId, canonicalKey: path, firstSeenAt: meta.start, lastSeenAt: meta.end, startTimestamp: meta.start, endTimestamp: meta.end, lineCount: meta.lineCount, byteCount: meta.byteCount, contentSha256: meta.contentSha256, metadata },
         observation: { id: id("obs", sourceId, path), sessionId: sid, sourceId, path, providerSessionId, observedAt: new Date().toISOString(), snapshotLabel: "external-import", fileBirthtime: meta.fileBirthtime, fileMtime: meta.fileMtime, fileSize: meta.byteCount, lineCount: meta.lineCount, firstEventAt: meta.start, lastEventAt: meta.end, contentSha256: meta.contentSha256, metadata },
@@ -488,8 +498,8 @@ async function addExternalProviderSessions(store, seen, addSource) {
         pushUnique(store.sessionObservations, seen.obs, observation);
         if (meta.title)
             pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "display", meta.title), targetType: "session", targetId: session.id, labelType: "display_name", value: meta.title, confidence: "observed", sourceId });
-        if (meta.cwd)
-            pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "cwd", meta.cwd), targetType: "session", targetId: session.id, labelType: "cwd", value: meta.cwd, confidence: "observed", sourceId });
+        if (typeof session.metadata?.cwd === "string")
+            pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "cwd", session.metadata.cwd), targetType: "session", targetId: session.id, labelType: "cwd", value: session.metadata.cwd, confidence: "observed", sourceId, metadata: { originalCwd: meta.cwd } });
     }
     for (const root of codingSessionsRoots) {
         const base = root;
