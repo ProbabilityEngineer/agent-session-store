@@ -1,6 +1,6 @@
 ---
 id: ass-4cs1
-status: in_progress
+status: closed
 deps: []
 links: []
 created: 2026-06-05T01:15:17Z

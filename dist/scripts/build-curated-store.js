@@ -38,6 +38,7 @@ const sqlitePath = join(storeDir, "session-store.sqlite");
 const defaultCodingSessionsRoots = [
     join(home, "Downloads", "coding-sessions"),
     join(home, "Desktop", "developer-archive", "x-backups-coding-sessions", "keep-session-data"),
+    join(home, "Desktop", "developer-archive", "x-backups", "x-backups-coding-sessions", "keep-session-data"),
     join(home, "Desktop", "developer-archive", "coding-sessions", "keep-session-data"),
     join(home, "Library", "Mobile Documents", "com~apple~CloudDocs", "developer", "coding-sessions-organized-20260531T052907Z", "keep-session-data"),
 ];
@@ -450,6 +451,19 @@ function deriveActiveTimeMetrics(store, seen, generatedAt) {
         agg.providers.add(session.provider);
         byProject.set(project, agg);
     }
+    for (const session of store.sessions) {
+        const metadata = asObj(session.metadata) ?? {};
+        const repoIdentityId = str(metadata.repoIdentityId);
+        const cwd = str(metadata.cwd);
+        const project = repoIdentityId ?? cwd ?? session.provider;
+        const agg = byProject.get(project) ?? { intervals: [], sessionIds: [], excludedSessionIds: [], providers: new Set(), paths: new Set(), repoIdentityId, displayName: repoIdentityId ? repoNames.get(repoIdentityId) : undefined };
+        if (cwd)
+            agg.paths.add(cwd);
+        agg.providers.add(session.provider);
+        if (!asObj(metadata.activeTime) && (session.lineCount ?? 0) > 1)
+            agg.intervals.push({ activeMinutes: 0, workBlockCount: 0, sessionIds: [session.id], excluded: true, warnings: ["session lacks timestamped event rows; active time is incomplete"] });
+        byProject.set(project, agg);
+    }
     for (const [project, metric] of byProject) {
         const included = metric.intervals.filter((interval) => !interval.excluded && interval.activeMinutes > 0).sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""));
         const collapsed = [];
@@ -521,11 +535,39 @@ class DisjointSet {
     }
     union(a, b) { this.parents.set(this.find(a), this.find(b)); }
 }
+function externalEventsFromRaw(provider, sourceId, sessionId, observationId, raw) {
+    const events = [];
+    let rowNumber = 0;
+    let byteOffset = 0;
+    for (const line of raw.split("\n")) {
+        const byteCount = Buffer.byteLength(line, "utf8");
+        if (!line.trim()) {
+            byteOffset += byteCount + 1;
+            continue;
+        }
+        rowNumber++;
+        try {
+            const row = JSON.parse(line);
+            const timestamp = rowTimestamp(row) ?? str(asObj(row.payload)?.timestamp);
+            if (!timestamp) {
+                byteOffset += byteCount + 1;
+                continue;
+            }
+            events.push({ id: id("event", provider, sessionId, String(rowNumber), sha(line)), sessionId, observationId, sourceId, provider, providerEventId: rowProviderEventId(row), eventType: eventType(row), timestamp, ordinal: rowNumber, rowNumber, role: rowRole(row), toolName: rowToolName(row), byteOffset, byteCount, contentSha256: sha(line), metadata: { privacyStatus: "metadata-only", importedProviderEvent: true } });
+        }
+        catch { }
+        byteOffset += byteCount + 1;
+    }
+    return events;
+}
 async function addExternalProviderSessions(store, seen, addSource) {
-    function addParsed(provider, sourceId, path, providerSessionId, meta) {
+    function addParsed(provider, sourceId, path, providerSessionId, meta, raw) {
         const { session, observation } = externalSession(path, sourceId, provider, providerSessionId, meta);
         pushUnique(store.sessions, seen.sessions, session);
         pushUnique(store.sessionObservations, seen.obs, observation);
+        if (raw)
+            for (const event of externalEventsFromRaw(provider, sourceId, session.id, observation.id, raw))
+                pushUnique(store.events, seen.events, event);
         if (meta.title)
             pushUnique(store.labels, seen.labels, { id: id("label", provider, session.id, "display", meta.title), targetType: "session", targetId: session.id, labelType: "display_name", value: meta.title, confidence: "observed", sourceId });
         if (typeof session.metadata?.cwd === "string")
@@ -565,7 +607,7 @@ async function addExternalProviderSessions(store, seen, addSource) {
                 }
                 catch { }
             }
-            addParsed("codex", codexSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows });
+            addParsed("codex", codexSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows }, fs.raw);
         }
         // oh-my-pi JSONL sessions.
         const ompRoot = join(base, "omp", "agent", "sessions");
@@ -600,7 +642,7 @@ async function addExternalProviderSessions(store, seen, addSource) {
                 }
                 catch { }
             }
-            addParsed("oh-my-pi", ompSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows });
+            addParsed("oh-my-pi", ompSource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows }, fs.raw);
         }
         // Factory JSONL sessions.
         const factoryRoot = join(base, "factory", "sessions");
@@ -635,7 +677,7 @@ async function addExternalProviderSessions(store, seen, addSource) {
                 }
                 catch { }
             }
-            addParsed("factory", factorySource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows, extra: { trivial: Object.keys(counts).length === 1 && counts.session_start === 1 } });
+            addParsed("factory", factorySource, path, sid, { cwd, title, start, end, lineCount: fs.lineCount, byteCount: fs.fileSize, contentSha256: fs.contentSha256, fileBirthtime: fs.fileBirthtime, fileMtime: fs.fileMtime, eventCounts: counts, timestampedRows, extra: { trivial: Object.keys(counts).length === 1 && counts.session_start === 1 } }, fs.raw);
         }
         // Claude transcripts.
         const claudeRoot = join(base, "claude");
@@ -759,7 +801,22 @@ function words(value) {
 }
 function deriveAdditionalMetadata(store, seen, generatedAt) {
     const confidenceRank = (confidence) => ({ manual: 4, authoritative: 3, observed: 2, high: 2, medium: 1, low: 0 }[confidence] ?? 0);
-    const repoByPath = [...store.repoObservations].filter((obs) => obs.path).sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0) || confidenceRank(b.confidence) - confidenceRank(a.confidence));
+    const repoIdentityById = new Map(store.repoIdentities.map((repo) => [repo.id, repo]));
+    const byStableName = new Map();
+    for (const repo of store.repoIdentities) {
+        const list = byStableName.get(repo.stableName) ?? [];
+        list.push(repo);
+        byStableName.set(repo.stableName, list);
+    }
+    const canonicalRepoIdentityId = new Map();
+    for (const group of byStableName.values()) {
+        const chosen = group.sort((a, b) => (a.stableName.startsWith("project:") ? -1 : 0) - (b.stableName.startsWith("project:") ? -1 : 0) || a.id.localeCompare(b.id))[0];
+        for (const repo of group)
+            canonicalRepoIdentityId.set(repo.id, chosen.id);
+    }
+    const canonicalRid = (repoIdentityId) => canonicalRepoIdentityId.get(repoIdentityId) ?? repoIdentityId;
+    const curatedRank = (repoIdentityId) => repoIdentityById.get(canonicalRid(repoIdentityId))?.stableName.startsWith("project:") ? 2 : repoIdentityById.get(canonicalRid(repoIdentityId))?.confidence === "manual" ? 1 : 0;
+    const repoByPath = [...store.repoObservations].filter((obs) => obs.path).map((obs) => ({ ...obs, repoIdentityId: canonicalRid(obs.repoIdentityId) })).sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0) || confidenceRank(b.confidence) - confidenceRank(a.confidence) || curatedRank(b.repoIdentityId) - curatedRank(a.repoIdentityId));
     const repoFor = (cwd) => cwd ? repoByPath.find((obs) => obs.path && (cwd === obs.path || cwd.startsWith(`${obs.path}/`))) : undefined;
     const byRepo = new Map();
     for (const session of store.sessions) {
