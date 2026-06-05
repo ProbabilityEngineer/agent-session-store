@@ -1,11 +1,12 @@
 {
   "name": "agent-session-store",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Canonical store and import/reconstruction tooling for agent session lineage.",
   "type": "module",
   "main": "dist/bin/agent-session-store.js",
   "types": "dist/bin/agent-session-store.d.ts",
   "bin": {
+    "astore": "dist/bin/agent-session-store.js",
     "agent-session-store": "dist/bin/agent-session-store.js"
   },
   "homepage": "https://github.com/ProbabilityEngineer/agent-session-store#readme",

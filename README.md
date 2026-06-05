@@ -17,21 +17,29 @@ git:github.com/ProbabilityEngineer/agent-session-store
 
 ## CLI
 
-The package ships committed built JavaScript under `dist/`. The npm/global executable is installed as:
+The package ships committed built JavaScript under `dist/`. The preferred npm/global executable is installed as:
+
+```text
+$(npm prefix -g)/bin/astore
+```
+
+Compatibility alias:
 
 ```text
 $(npm prefix -g)/bin/agent-session-store
 ```
 
 ```bash
+astore build
+astore export-graph
+astore scan-repos
+astore repo-identities
+astore repo-identity-candidates
+astore approve-repo-identity --candidate <id> --yes
+astore inventory-providers
+astore backup-readiness
+# compatibility fallback still works:
 agent-session-store build
-agent-session-store export-graph
-agent-session-store scan-repos
-agent-session-store repo-identities
-agent-session-store repo-identity-candidates
-agent-session-store approve-repo-identity --candidate <id> --yes
-agent-session-store inventory-providers
-agent-session-store backup-readiness
 ```
 
 The CLI runs the built `dist/scripts/*.js` commands and keeps canonical data preparation separate from graph rendering. `pi-session-graph` can depend on this package as its canonical store/export backend, while graph rendering remains in the graph package.
@@ -52,7 +60,7 @@ Legacy inputs are still read for compatibility:
 ~/.pi/agent/relocation-lineages.jsonl
 ```
 
-Required move-manifest fields are the source/destination session paths, source/destination cwd, timestamp, and move mode/operation metadata when available. `pi-session-move` writes those fields directly. A missing `~/.pi/agent/session-store/session-store.sqlite` is expected on first rebuild; `agent-session-store build` creates it and `agent-session-store export-graph` then writes `graph-export.json`.
+Required move-manifest fields are the source/destination session paths, source/destination cwd, timestamp, and move mode/operation metadata when available. `pi-session-move` writes those fields directly. A missing `~/.pi/agent/session-store/session-store.sqlite` is expected on first rebuild; `astore build` creates it and `astore export-graph` then writes `graph-export.json`.
 
 ## Main scripts
 
@@ -62,8 +70,8 @@ npm run export-graph         # graph-ready JSON for pi-session-graph
 npm run repo-identities      # markdown report for repo identities/events
 npm run repo-identity-candidates # candidate renamed/project alias report
 npm run approve-repo-identity -- --candidate <id> --yes # append approved aliases
+npm run inventory-providers # provider archive format inventory
 npm run scan-repos           # append observed repo identity records to sidecar
-npm run inventory-providers  # provider archive format inventory
 npm run enrich-github-repos  # optional GitHub API enrichment when GITHUB_TOKEN/GH_TOKEN is set
 npm run backup-readiness     # backup extraction readiness report
 npm run inventory-buckets    # session bucket inventory/reconciliation
@@ -173,9 +181,9 @@ Events are interpretation/evidence layers; raw sessions and relocation manifests
 Candidate detection and approval workflow:
 
 ```bash
-agent-session-store repo-identity-candidates
-agent-session-store approve-repo-identity --candidate repo_candidate_3 --yes
-agent-session-store approve-repo-identity \
+astore repo-identity-candidates
+astore approve-repo-identity --candidate repo_candidate_3 --yes
+astore approve-repo-identity \
   --stable-name check-your-photos-v1 \
   --display-name check-your-photos-v1 \
   --path /Users/sam/git/bespoke-thinking/cypv1 \
@@ -185,6 +193,8 @@ agent-session-store approve-repo-identity \
 ```
 
 Candidate detection uses metadata-only signals such as same git remote, name/acronym similarity, same parent folder, and temporal continuity. Weak candidates require manual approval. Approved aliases are appended to `repo-identities.jsonl` and projected into SQLite/JSON exports on the next build.
+
+`astore` is the preferred short CLI alias; `agent-session-store` remains the compatibility fallback.
 
 ## Pi session suite relationship
 

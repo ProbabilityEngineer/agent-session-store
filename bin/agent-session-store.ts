@@ -32,7 +32,7 @@ const scripts: Record<string, string[]> = {
 };
 
 if (command === "help" || command === "--help" || command === "-h") {
-	console.log(`agent-session-store commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nExamples:\n  agent-session-store status\n  agent-session-store build\n  agent-session-store export-graph\n  agent-session-store scan-repos\n`);
+	console.log(`agent-session-store / astore commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nExamples:\n  astore status\n  astore build\n  astore export-graph\n  astore scan-repos\n  agent-session-store status\n`);
 	process.exit(0);
 }
 
