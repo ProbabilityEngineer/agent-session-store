@@ -28,6 +28,9 @@ agent-session-store build
 agent-session-store export-graph
 agent-session-store scan-repos
 agent-session-store repo-identities
+agent-session-store repo-identity-candidates
+agent-session-store approve-repo-identity --candidate <id> --yes
+agent-session-store inventory-providers
 agent-session-store backup-readiness
 ```
 
@@ -57,7 +60,10 @@ Required move-manifest fields are the source/destination session paths, source/d
 npm run build-store          # build SQLite + JSON exports
 npm run export-graph         # graph-ready JSON for pi-session-graph
 npm run repo-identities      # markdown report for repo identities/events
+npm run repo-identity-candidates # candidate renamed/project alias report
+npm run approve-repo-identity -- --candidate <id> --yes # append approved aliases
 npm run scan-repos           # append observed repo identity records to sidecar
+npm run inventory-providers  # provider archive format inventory
 npm run enrich-github-repos  # optional GitHub API enrichment when GITHUB_TOKEN/GH_TOKEN is set
 npm run backup-readiness     # backup extraction readiness report
 npm run inventory-buckets    # session bucket inventory/reconciliation
@@ -77,6 +83,13 @@ npm run lint                 # TypeScript check
 ~/.pi/agent/session-store/session-store.export.json
 ~/.pi/agent/session-store/graph-export.json
 ~/.pi/agent/session-store/repo-identities.md
+~/.pi/agent/session-store/repo-identity-candidates.json
+~/.pi/agent/session-store/repo-identity-candidates.md
+~/.pi/agent/session-store/provider-format-inventory.json
+~/.pi/agent/session-store/provider-format-inventory.md
+~/.pi/agent/session-store/raw-source-manifest.json
+~/.pi/agent/session-store/raw-source-manifest.md
+~/.pi/agent/session-store/build-validation.md
 ~/.pi/agent/session-store/session-bucket-reconciliation.json
 ~/.pi/agent/session-store/session-bucket-reconciliation.md
 ~/.pi/agent/session-store/logical-threads.md
@@ -84,6 +97,20 @@ npm run lint                 # TypeScript check
 ```
 
 SQLite is the canonical local database. JSON exports are portable/reviewable projections for graph viewers and disaster recovery.
+
+The `events` table stores metadata-only event rows. It currently indexes Pi session JSONL events and timestamped JSONL archives from providers such as Codex, oh-my-pi, and Factory. Event rows include provider, event type, timestamp, ordinal/row number, role/tool metadata, byte offsets/counts, and content hashes, not raw transcript text.
+
+Default external archive roots include:
+
+```text
+~/Downloads/coding-sessions
+~/Desktop/developer-archive/x-backups-coding-sessions/keep-session-data
+~/Desktop/developer-archive/x-backups/x-backups-coding-sessions/keep-session-data
+~/Desktop/developer-archive/coding-sessions/keep-session-data
+~/Library/Mobile Documents/com~apple~CloudDocs/developer/coding-sessions-organized-20260531T052907Z/keep-session-data
+```
+
+Override roots with `AGENT_SESSION_EXTERNAL_ROOTS=/path/a:/path/b`.
 
 `npm run build-graphs` writes timestamped HTML graph reports under `~/Desktop/session-graphs/`. Data/debug artifacts (`.json`, `.mmd`, `.md`) are omitted by default; include them with `npm run build-graphs -- --include-data`.
 
@@ -95,6 +122,27 @@ SQLite is the canonical local database. JSON exports are portable/reviewable pro
 | `<timestamp>-timeline-sessions.html` | `temporal-timeline-sessions.html` | Same timeline data grouped by individual session file. |
 
 The HTML page titles include the same timestamp and graph type, e.g. `<timestamp> — Lineage Full`.
+
+## Active-time metrics
+
+`agent-session-store build` derives active-time estimates from timestamp gaps in metadata-only event rows. The metric is an estimate of timestamp-backed activity, not a guarantee of lifetime project effort.
+
+Current safeguards:
+
+- Visit-bounded Pi sessions use reconstructed arrival/departure rows where available.
+- Relocated sessions whose visit range starts at row 1 are treated as likely inherited copied history and excluded from project aggregates.
+- Overlapping project intervals are collapsed before aggregation to reduce duplicate/copy overcount.
+- Project active-time artifacts export `collapsedIntervals`, `rawIntervalCount`, `excludedSessionIds`, and `coverageWarnings`.
+- Sessions without usable timestamped event rows contribute coverage warnings instead of pretending the aggregate is complete.
+
+Relevant outputs:
+
+```text
+~/.pi/agent/session-store/build-validation.md
+~/.pi/agent/session-store/graph-export.json
+```
+
+In `graph-export.json`, top-level `activeTimeMetrics` carries project aggregates, while `temporalActivitySpans` carries session/span-level timing fields. Consumers should display coverage/confidence warnings when present.
 
 ## Repo identity
 
@@ -121,6 +169,22 @@ The store imports these into:
 - `repo_events`
 
 Events are interpretation/evidence layers; raw sessions and relocation manifests remain unchanged.
+
+Candidate detection and approval workflow:
+
+```bash
+agent-session-store repo-identity-candidates
+agent-session-store approve-repo-identity --candidate repo_candidate_3 --yes
+agent-session-store approve-repo-identity \
+  --stable-name check-your-photos-v1 \
+  --display-name check-your-photos-v1 \
+  --path /Users/sam/git/bespoke-thinking/cypv1 \
+  --path /Users/sam/git/bespoke-thinking/checkyourphotosv1 \
+  --path /Users/sam/git/bespoke-thinking/check-your-photos-v1 \
+  --yes
+```
+
+Candidate detection uses metadata-only signals such as same git remote, name/acronym similarity, same parent folder, and temporal continuity. Weak candidates require manual approval. Approved aliases are appended to `repo-identities.jsonl` and projected into SQLite/JSON exports on the next build.
 
 ## Pi session suite relationship
 
