@@ -184,11 +184,11 @@ Candidate detection and approval workflow:
 astore repo-identity-candidates
 astore approve-repo-identity --candidate repo_candidate_3 --yes
 astore approve-repo-identity \
-  --stable-name check-your-photos-v1 \
-  --display-name check-your-photos-v1 \
-  --path /Users/sam/git/bespoke-thinking/cypv1 \
-  --path /Users/sam/git/bespoke-thinking/checkyourphotosv1 \
-  --path /Users/sam/git/bespoke-thinking/check-your-photos-v1 \
+  --stable-name example-project \
+  --display-name example-project \
+  --path /Users/example/git/example-project-v1 \
+  --path /Users/example/git/exampleproject \
+  --path /Users/example/git/example-project \
   --yes
 ```
 
