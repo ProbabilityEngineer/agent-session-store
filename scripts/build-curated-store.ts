@@ -441,7 +441,7 @@ function deriveActiveTimeMetrics(store: Store, seen: Seen, generatedAt: string) 
 	const eventsBySession = new Map<string, Event[]>();
 	for (const event of store.events) if (event.timestamp && event.rowNumber) { const list = eventsBySession.get(event.sessionId) ?? []; list.push(event); eventsBySession.set(event.sessionId, list); }
 	const repoNames = new Map(store.repoIdentities.map((repo) => [repo.id, repo.displayName ?? repo.stableName]));
-	const byProject = new Map<string, { activeMinutes: number; workBlockCount: number; sessionIds: string[]; providers: Set<string>; paths: Set<string>; repoIdentityId?: string; displayName?: string }>();
+	const byProject = new Map<string, { intervals: { start?: string; end?: string; activeMinutes: number; workBlockCount: number; sessionIds: string[]; excluded: boolean; warnings: string[] }[]; sessionIds: string[]; excludedSessionIds: string[]; providers: Set<string>; paths: Set<string>; repoIdentityId?: string; displayName?: string }>();
 	for (const session of store.sessions) {
 		const events = eventsBySession.get(session.id) ?? [];
 		if (!events.length) continue;
@@ -453,19 +453,37 @@ function deriveActiveTimeMetrics(store: Store, seen: Seen, generatedAt: string) 
 		const visitEvents = events.filter((event) => (event.rowNumber ?? 0) >= arrivalRow && (event.rowNumber ?? 0) <= departureRow);
 		if (!visitEvents.length) continue;
 		const metric = activeTimeFromEvents(visitEvents);
-		session.metadata = { ...metadata, activeTime: { ...metric, rowRange: { arrivalRow, departureRow }, source: "visit-row-event-timestamp-gaps", confidence: metric.eventCount > 1 ? "medium" : "low" } };
+		const copiedRelocationRisk = session.canonicalKey.includes("_relocated_") && arrivalRow <= 1;
+		const warnings = copiedRelocationRisk ? ["relocated session starts at row 1; likely includes inherited copied history"] : [];
+		const confidence = copiedRelocationRisk ? "low" : metric.eventCount > 1 ? "medium" : "low";
+		session.metadata = { ...metadata, activeTime: { ...metric, rowRange: { arrivalRow, departureRow }, source: "visit-row-event-timestamp-gaps", confidence, excludedFromAggregate: copiedRelocationRisk, warnings } };
 		const repoIdentityId = str(metadata.repoIdentityId);
 		const cwd = str(metadata.cwd);
 		const project = repoIdentityId ?? cwd ?? session.provider;
-		const agg = byProject.get(project) ?? { activeMinutes: 0, workBlockCount: 0, sessionIds: [], providers: new Set<string>(), paths: new Set<string>(), repoIdentityId, displayName: repoIdentityId ? repoNames.get(repoIdentityId) : undefined };
+		const agg = byProject.get(project) ?? { intervals: [], sessionIds: [], excludedSessionIds: [], providers: new Set<string>(), paths: new Set<string>(), repoIdentityId, displayName: repoIdentityId ? repoNames.get(repoIdentityId) : undefined };
 		if (cwd) agg.paths.add(cwd);
-		agg.activeMinutes += metric.activeMinutes;
-		agg.workBlockCount += metric.workBlockCount;
-		agg.sessionIds.push(session.id);
+		agg.intervals.push({ start: metric.firstWorkedAt, end: metric.lastWorkedAt, activeMinutes: metric.activeMinutes, workBlockCount: metric.workBlockCount, sessionIds: [session.id], excluded: copiedRelocationRisk, warnings });
+		if (copiedRelocationRisk) agg.excludedSessionIds.push(session.id); else agg.sessionIds.push(session.id);
 		agg.providers.add(session.provider);
 		byProject.set(project, agg);
 	}
-	for (const [project, metric] of byProject) pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "active-time", project), kind: "active_time_metric", path: `derived:active-time:${project}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { project, repoIdentityId: metric.repoIdentityId, displayName: metric.displayName, contributingPaths: [...metric.paths].sort(), activeMinutes: metric.activeMinutes, activeHours: +(metric.activeMinutes / 60).toFixed(2), workBlockCount: metric.workBlockCount, sessionCount: metric.sessionIds.length, sessionIds: metric.sessionIds, providers: [...metric.providers].sort(), idleThresholdMinutes: 30, source: "visit-row-event-timestamp-gaps", confidence: metric.repoIdentityId ? "high" : "medium" } });
+	for (const [project, metric] of byProject) {
+		const included = metric.intervals.filter((interval) => !interval.excluded && interval.activeMinutes > 0).sort((a, b) => (a.start ?? "").localeCompare(b.start ?? ""));
+		const collapsed: typeof included = [];
+		for (const interval of included) {
+			const previous = collapsed[collapsed.length - 1];
+			if (previous && interval.start && previous.end && interval.start <= previous.end) {
+				if (interval.end && (!previous.end || interval.end > previous.end)) previous.end = interval.end;
+				previous.activeMinutes = Math.max(previous.activeMinutes, interval.activeMinutes);
+				previous.workBlockCount = Math.max(previous.workBlockCount, interval.workBlockCount);
+				previous.sessionIds.push(...interval.sessionIds);
+			} else collapsed.push({ ...interval, sessionIds: [...interval.sessionIds] });
+		}
+		const activeMinutes = collapsed.reduce((sum, interval) => sum + interval.activeMinutes, 0);
+		const workBlockCount = collapsed.reduce((sum, interval) => sum + interval.workBlockCount, 0);
+		const warnings = [...new Set(metric.intervals.flatMap((interval) => interval.warnings))];
+		pushUnique(store.artifacts, seen.artifacts, { id: id("artifact", "active-time", project), kind: "active_time_metric", path: `derived:active-time:${project}`, generatedAt, generator: "scripts/build-curated-store.ts", metadata: { project, repoIdentityId: metric.repoIdentityId, displayName: metric.displayName, contributingPaths: [...metric.paths].sort(), activeMinutes, activeHours: +(activeMinutes / 60).toFixed(2), workBlockCount, sessionCount: metric.sessionIds.length, sessionIds: metric.sessionIds, excludedSessionIds: metric.excludedSessionIds, collapsedIntervals: collapsed, providers: [...metric.providers].sort(), idleThresholdMinutes: 30, source: "visit-row-event-timestamp-gaps-deduped", confidence: warnings.length || metric.excludedSessionIds.length ? "low" : metric.repoIdentityId ? "high" : "medium", coverageWarnings: warnings, rawIntervalCount: metric.intervals.length } });
+	}
 }
 
 function deriveDuplicateCandidates(store: Store, seen: Seen) {
@@ -488,7 +506,9 @@ function validationReport(store: Store) {
 	for (const session of store.sessions) if (session.contentSha256) { const list = duplicateHashes.get(session.contentSha256) ?? []; list.push(session); duplicateHashes.set(session.contentSha256, list); }
 	const duplicateGroups = [...duplicateHashes.values()].filter((group) => group.length > 1);
 	const sessionsWithoutRepo = store.sessions.filter((session) => !asObj(session.metadata)?.cwd && !asObj(session.metadata)?.repoIdentityId);
-	const lines = [`# Build validation report`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `Sessions: ${store.sessions.length}`, `Session observations: ${store.sessionObservations.length}`, `SQLite event rows: ${store.events.length}`, `Edges: ${store.edges.length}`, `Evidence records: ${store.evidence.length}`, ``, `Sessions by provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `Events by provider: ${Object.entries(eventByProvider).map(([k, v]) => `${k}: ${v}`).join(", ") || "none"}`, ``, `## Timestamp coverage`, ``, `Sessions with coverage metadata: ${coverageRows.length}`, `Low coverage sessions (<50% timestamped rows): ${lowCoverage.length}`, ``, `| Provider | Session | Coverage | Timestamped / Total |`, `| --- | --- | ---: | ---: |`, ...lowCoverage.slice(0, 50).map(({ session, coverage }) => `| ${session.provider} | ${session.id} | ${((num(coverage?.coverage) ?? 0) * 100).toFixed(1)}% | ${coverage?.timestampedRows ?? 0} / ${coverage?.totalRows ?? 0} |`), ``, `## Duplicate candidates`, ``, `Duplicate content-hash groups: ${duplicateGroups.length}`, ``, ...duplicateGroups.slice(0, 25).map((group) => `- ${group[0]?.contentSha256}: ${group.map((session) => `${session.provider}:${session.providerSessionId ?? session.id}`).join(", ")}`), ``, `## Repo/project identity`, ``, `Sessions without cwd/repo identity metadata: ${sessionsWithoutRepo.length}`];
+	const activeMetrics = store.artifacts.filter((artifact) => artifact.kind === "active_time_metric");
+	const riskyActiveMetrics = activeMetrics.filter((artifact) => ((asObj(artifact.metadata)?.coverageWarnings as unknown[])?.length ?? 0) > 0 || ((asObj(artifact.metadata)?.excludedSessionIds as unknown[])?.length ?? 0) > 0);
+	const lines = [`# Build validation report`, ``, `Generated: ${new Date().toISOString()}`, ``, `## Counts`, ``, `Sessions: ${store.sessions.length}`, `Session observations: ${store.sessionObservations.length}`, `SQLite event rows: ${store.events.length}`, `Edges: ${store.edges.length}`, `Evidence records: ${store.evidence.length}`, ``, `Sessions by provider: ${Object.entries(byProvider).map(([k, v]) => `${k}: ${v}`).join(", ")}`, `Events by provider: ${Object.entries(eventByProvider).map(([k, v]) => `${k}: ${v}`).join(", ") || "none"}`, ``, `## Timestamp coverage`, ``, `Sessions with coverage metadata: ${coverageRows.length}`, `Low coverage sessions (<50% timestamped rows): ${lowCoverage.length}`, ``, `| Provider | Session | Coverage | Timestamped / Total |`, `| --- | --- | ---: | ---: |`, ...lowCoverage.slice(0, 50).map(({ session, coverage }) => `| ${session.provider} | ${session.id} | ${((num(coverage?.coverage) ?? 0) * 100).toFixed(1)}% | ${coverage?.timestampedRows ?? 0} / ${coverage?.totalRows ?? 0} |`), ``, `## Active-time coverage warnings`, ``, `Active-time project metrics: ${activeMetrics.length}`, `Metrics with warnings/exclusions: ${riskyActiveMetrics.length}`, ``, `| Project | Active hours | Excluded sessions | Warnings |`, `| --- | ---: | ---: | --- |`, ...riskyActiveMetrics.slice(0, 50).map((artifact) => { const m = asObj(artifact.metadata) ?? {}; return `| ${m.displayName ?? m.project ?? artifact.path} | ${m.activeHours ?? 0} | ${(m.excludedSessionIds as unknown[] | undefined)?.length ?? 0} | ${((m.coverageWarnings as string[] | undefined) ?? []).join("; ")} |`; }), ``, `## Duplicate candidates`, ``, `Duplicate content-hash groups: ${duplicateGroups.length}`, ``, ...duplicateGroups.slice(0, 25).map((group) => `- ${group[0]?.contentSha256}: ${group.map((session) => `${session.provider}:${session.providerSessionId ?? session.id}`).join(", ")}`), ``, `## Repo/project identity`, ``, `Sessions without cwd/repo identity metadata: ${sessionsWithoutRepo.length}`];
 	return lines.join("\n");
 }
 
