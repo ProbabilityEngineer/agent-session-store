@@ -29,12 +29,12 @@ const scripts = {
     "build-graphs": ["scripts/build-graphs.js"],
     "validate-timeline": ["scripts/validate-session-timeline.js"],
 };
-if (command === "--version" || command === "-v" || command === "version") {
+if (command === "--version" || command === "-V" || command === "version") {
     console.log(version);
     process.exit(0);
 }
 if (command === "help" || command === "--help" || command === "-h") {
-    console.log(`agent-session-store / astore commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nOptions:\n  -v, --version   print the CLI version\n\nExamples:\n  astore status\n  astore build\n  astore export-graph\n  astore scan-repos\n  agent-session-store status\n`);
+    console.log(`agent-session-store / astore commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nOptions:\n  -V, --version   print the CLI version\n\nExamples:\n  astore status\n  astore build\n  astore export-graph\n  astore scan-repos\n  agent-session-store status\n`);
     process.exit(0);
 }
 if (command === "status") {
