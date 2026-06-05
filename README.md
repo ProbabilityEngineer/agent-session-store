@@ -38,6 +38,7 @@ astore repo-identity-candidates
 astore approve-repo-identity --candidate <id> --yes
 astore inventory-providers
 astore backup-readiness
+astore --version
 # compatibility fallback still works:
 agent-session-store build
 ```

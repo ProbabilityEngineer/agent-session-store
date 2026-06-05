@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
+import { readFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
-const root = join(here, "..");
+const root = basename(here) === "bin" && basename(dirname(here)) === "dist" ? join(here, "..", "..") : join(here, "..");
 const command = process.argv[2] ?? "help";
 const rest = process.argv.slice(3);
+const version = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;
 const artifactPaths = [
     "session-store.sqlite",
     "session-store.export.json",
@@ -27,8 +29,12 @@ const scripts = {
     "build-graphs": ["scripts/build-graphs.js"],
     "validate-timeline": ["scripts/validate-session-timeline.js"],
 };
+if (command === "--version" || command === "-v" || command === "version") {
+    console.log(version);
+    process.exit(0);
+}
 if (command === "help" || command === "--help" || command === "-h") {
-    console.log(`agent-session-store / astore commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nExamples:\n  astore status\n  astore build\n  astore export-graph\n  astore scan-repos\n  agent-session-store status\n`);
+    console.log(`agent-session-store / astore commands:\n\n  status\n${Object.keys(scripts).sort().map((name) => `  ${name}`).join("\n")}\n\nExamples:\n  astore status\n  astore build\n  astore export-graph\n  astore scan-repos\n  astore --version\n  agent-session-store status\n`);
     process.exit(0);
 }
 if (command === "status") {
