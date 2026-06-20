@@ -1,5 +1,7 @@
 # agent-session-store
 
+> One of my diet context engineering and workflow extensions. Add pi-diet-LSP, pi-diet-Ripgrep, pi-repo-move and others from [npm](https://www.npmjs.com/~probabilityengineer).
+
 Canonical store and import/reconstruction tooling for agent session lineage, repository identity, evidence curation, and graph/report exports.
 
 Repository shorthand:
