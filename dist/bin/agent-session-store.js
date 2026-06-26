@@ -15,19 +15,19 @@ const artifactPaths = [
     "repo-identities.md",
 ];
 const scripts = {
-    build: ["scripts/build-curated-store.js"],
-    "build-store": ["scripts/build-curated-store.js"],
-    "export-graph": ["scripts/export-graph-json.js"],
-    "scan-repos": ["scripts/scan-repo-identities.js"],
-    "repo-identities": ["scripts/repo-identity-report.js"],
-    "repo-identity-candidates": ["scripts/repo-identity-candidates.js"],
-    "approve-repo-identity": ["scripts/approve-repo-identity.js"],
-    "backup-readiness": ["scripts/backup-readiness-report.js"],
-    "inventory-buckets": ["scripts/inventory-session-buckets.js"],
-    "inventory-providers": ["scripts/inventory-provider-archive.js"],
-    "logical-threads": ["scripts/logical-thread-report.js"],
-    "build-graphs": ["scripts/build-graphs.js"],
-    "validate-timeline": ["scripts/validate-session-timeline.js"],
+    build: ["dist/scripts/build-curated-store.js"],
+    "build-store": ["dist/scripts/build-curated-store.js"],
+    "export-graph": ["dist/scripts/export-graph-json.js"],
+    "scan-repos": ["dist/scripts/scan-repo-identities.js"],
+    "repo-identities": ["dist/scripts/repo-identity-report.js"],
+    "repo-identity-candidates": ["dist/scripts/repo-identity-candidates.js"],
+    "approve-repo-identity": ["dist/scripts/approve-repo-identity.js"],
+    "backup-readiness": ["dist/scripts/backup-readiness-report.js"],
+    "inventory-buckets": ["dist/scripts/inventory-session-buckets.js"],
+    "inventory-providers": ["dist/scripts/inventory-provider-archive.js"],
+    "logical-threads": ["dist/scripts/logical-thread-report.js"],
+    "build-graphs": ["dist/scripts/build-graphs.js"],
+    "validate-timeline": ["dist/scripts/validate-session-timeline.js"],
 };
 if (command === "--version" || command === "-V" || command === "version") {
     console.log(version);
