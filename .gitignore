@@ -2,3 +2,12 @@ node_modules/
 .DS_Store
 *.log
 .turnlog/
+
+# Local agent, task, provenance, VCS, and build state
+.pi/
+.tickets/
+.jj/
+.clu/data.sqlite
+.clu/data.sqlite-wal
+.clu/data.sqlite-shm
+.build/
