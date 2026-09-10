@@ -22,4 +22,10 @@
 
 - Preserve unrelated working changes; ask before deleting files or directories.
 - Record meaningful repository work with Turnlog; initialize it when missing and keep `.turnlog/` local-only.
-- Use clu for current work tracking. Keep legacy ticket files until their migration is verified.
+- Use `clu` as the authoritative source of project tasks and work state.
+
+## Work tracking
+
+- At the start of substantial work, run `clu ready`, then use `clu claim --context` or claim the specifically requested task; read inherited context before editing.
+- Put newly discovered work, notes, and dependencies in `clu`, not Markdown todo lists.
+- Close completed work in `clu` after validation; leave incomplete or blocked work represented there.
