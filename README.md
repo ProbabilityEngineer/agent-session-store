@@ -220,11 +220,10 @@ Compatibility aliases should be preserved during migration rather than broken ab
 
 ## Development
 
-Use `jj` locally and Git/GitHub for remote interop:
+Use standard Git/GitHub workflows for remote collaboration:
 
 ```bash
-jj status
-jj log
-jj git export
+git status
+git log --oneline --decorate --max-count=10
 git push origin main
 ```
